@@ -19,7 +19,6 @@
 /db/*.sqlite*
 /db/*sql
 /exports/
-/Gemfile.lock
 /log/
 /public/assets/
 /public/doc/api/
