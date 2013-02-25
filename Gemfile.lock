@@ -131,7 +131,6 @@ GEM
       rubyzip
       thor
     multi_json (1.6.1)
-    mysql (2.8.1)
     net-ldap (0.3.1)
     netaddr (1.5.0)
     nokogiri (1.5.5)
@@ -206,7 +205,6 @@ GEM
     soap4r-middleware (0.8.3)
       soap4r-ruby1.9 (= 2.0.0)
     soap4r-ruby1.9 (2.0.0)
-    sqlite3-ruby (1.3.2)
     statsd-ruby (1.0.0)
     subexec (0.0.4)
     test-unit (1.2.3)
@@ -275,7 +273,6 @@ DEPENDENCIES
   mini_magick (= 1.3.2)
   mocha (= 0.12.3)
   moodle2cc (= 0.1.6)
-  mysql (= 2.8.1)
   net-ldap (= 0.3.1)
   netaddr (= 1.5.0)
   nokogiri (= 1.5.5)
@@ -312,7 +309,6 @@ DEPENDENCIES
   selenium-webdriver (= 2.27.2)
   sexp_processor (= 3.0.5)
   soap4r-middleware (= 0.8.3)
-  sqlite3-ruby (= 1.3.2)
   statsd-ruby (= 1.0.0)
   test-unit (= 1.2.3)
   timecop (= 0.5.9.1)
