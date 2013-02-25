@@ -74,17 +74,9 @@ group :assets do
   gem 'bootstrap-sass', '2.0.3.1'
 end
 
-group :mysql do
-  gem 'mysql',        '2.8.1'
-end
 
-group :postgres do
-  gem 'pg',           '0.10.1'
-end
+gem 'pg',           '0.10.1'
 
-group :sqlite do
-  gem 'sqlite3-ruby', '1.3.2'
-end
 
 group :test do
   gem 'bluecloth',    '2.0.10' # for generating api docs
