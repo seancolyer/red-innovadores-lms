@@ -113,6 +113,10 @@ group :development, :test do
   gem 'parallel',     '0.5.16'
 end
 
+group :production do
+  gem 'unicorn'
+end
+
 group :i18n_tools do
   gem 'ruby_parser', '2.0.6'
   gem 'sexp_processor', '3.0.5'

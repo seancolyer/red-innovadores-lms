@@ -98,6 +98,7 @@ GEM
       closure-compiler (>= 0.1.0)
       yui-compressor (>= 0.9.1)
     json (1.5.5)
+    kgio (2.7.4)
     libwebsocket (0.1.7.1)
       addressable
       websocket
@@ -155,6 +156,7 @@ GEM
       activeresource (= 2.3.17)
       activesupport (= 2.3.17)
       rake (>= 0.8.3)
+    raindrops (0.10.0)
     rake (0.9.6)
     ratom-instructure (0.6.9)
       libxml-ruby (>= 1.1.2)
@@ -219,6 +221,10 @@ GEM
       polyglot (>= 0.3.1)
     typhoeus (0.3.3)
       mime-types
+    unicorn (4.4.0)
+      kgio (~> 2.6)
+      rack
+      raindrops (~> 0.7)
     uuid (2.3.2)
       macaddr (~> 1.0)
     webrat (0.7.3)
@@ -312,6 +318,7 @@ DEPENDENCIES
   statsd-ruby (= 1.0.0)
   test-unit (= 1.2.3)
   timecop (= 0.5.9.1)
+  unicorn
   uuid (= 2.3.2)
   webrat (= 0.7.3)
   will_paginate (= 2.3.15)
