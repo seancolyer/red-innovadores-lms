@@ -1,0 +1,41 @@
+$navbarBackground: #056772;
+$navbarBackgroundHighlight: #056772;
+$navbarText: #ffffff;
+$navbarLinkColor: #ffffff;
+$bodyBackground: transparent;
+
+@import 'bootstrap';
+
+
+html {
+  background: url('/images/background.png');
+}
+
+body {
+  background-color: transparent;
+}
+
+body > header {
+  background-color: white;
+  display: inline-block;
+  height: 50px;
+  margin: 0;
+  padding: 10px 0;
+  width: 100%;
+}
+
+.navbar {
+  .container { width: 940px;}
+}
+
+.tinymce {
+  height: 600px;
+}
+
+#header {
+  background: #056772;
+}
+
+#identity {
+  background: #03484f;
+}

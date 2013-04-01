@@ -16,6 +16,8 @@ css_compressor_options:
 javascripts:
 
 stylesheets:
+  red_innovacion:
+    - public/stylesheets/compiled/application.css
   common:
     - public/stylesheets/compiled/g_reset.css
     - public/stylesheets/compiled/g_base.css
