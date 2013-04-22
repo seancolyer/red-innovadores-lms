@@ -221,6 +221,8 @@ GEM
       polyglot (>= 0.3.1)
     typhoeus (0.3.3)
       mime-types
+    typhoid (0.0.1)
+      typhoeus
     unicorn (4.4.0)
       kgio (~> 2.6)
       rack
@@ -318,6 +320,7 @@ DEPENDENCIES
   statsd-ruby (= 1.0.0)
   test-unit (= 1.2.3)
   timecop (= 0.5.9.1)
+  typhoid
   unicorn
   uuid (= 2.3.2)
   webrat (= 0.7.3)
