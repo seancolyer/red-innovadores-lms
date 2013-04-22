@@ -38,7 +38,7 @@ class RemoteUser < Typhoid::Resource
   field :username
   field :website
 
-  self.site = 'http://localhost:8888/'  # The base-url for where we plan to retrieve data
+  self.site = 'http://auth.redinnovacion.org/'  # The base-url for where we plan to retrieve data
   self.path = 'users'                  # Specific path to get the data for this Class
 
   def self.get_user_by_username(username)
