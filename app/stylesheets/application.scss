@@ -3,7 +3,7 @@ $navbarBackgroundHighlight: #056772;
 $navbarText: #ffffff;
 $navbarLinkColor: #ffffff;
 $bodyBackground: transparent;
-
+$gridColumnWidth: 75px;
 @import 'bootstrap';
 
 
@@ -25,7 +25,7 @@ body > header {
 }
 
 .navbar {
-  .container { width: 940px;}
+  .container { width: 1120px;}
 }
 
 .tinymce {
