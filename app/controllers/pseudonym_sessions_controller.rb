@@ -63,7 +63,7 @@ class PseudonymSessionsController < ApplicationController
         if st.is_valid?
           @pseudonym = nil
           user = RemoteUser.get_user_by_username(st.response.user)
-          @pseudonym = @domain_root_account.pseudonyms.custom_find_by_unique_id(user.attributes['cas_user_0']['email'])
+          @pseudonym = @domain_root_account.pseudonyms.custom_find_by_unique_id(user.email)
           if @pseudonym
             # Successful login and we have a user
             @domain_root_account.pseudonym_sessions.create!(@pseudonym, false)
