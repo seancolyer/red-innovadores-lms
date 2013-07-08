@@ -1,11 +1,11 @@
-$navbarBackground: #056772;
+/*$navbarBackground: #056772;
 $navbarBackgroundHighlight: #056772;
 $navbarText: #ffffff;
 $navbarLinkColor: #ffffff;
 $bodyBackground: transparent;
 $gridColumnWidth: 75px;
 @import 'bootstrap';
-
+*/
 
 html {
   background: url('/images/background.png');
@@ -23,33 +23,99 @@ body > header {
   margin: 0;
   padding: 10px 0;
   width: 100%;
+  
+  .container {
+    width: 1120px;
+  }
+  
+}
+
+
+.container {
+  margin-right: auto;
+  margin-left: auto;
 }
 
 .navbar {
+  overflow: visible;
+  margin-bottom: 20px;
+
   .navbar-inner {
+    -webkit-border-radius: 0px;
+    -moz-border-radius: 0px;
+    border-radius: 0px;
+    min-height: 40px;
+    padding-left: 20px;
+    padding-right: 20px;
+    background-color: #056772;
+    background-image: -moz-linear-gradient(top, #056772, #056772);
+    background-image: -webkit-gradient(linear, 0 0, 0 100%, from(#056772), to(#056772));
+    background-image: -webkit-linear-gradient(top, #056772, #056772);
+    background-image: -o-linear-gradient(top, #056772, #056772);
+    background-image: linear-gradient(to bottom, #056772, #056772);
+    background-repeat: repeat-x;
+    filter: progid:DXImageTransform.Microsoft.gradient(startColorstr='#FF056772', endColorstr='#FF056772', GradientType=0);
+    border: 1px solid #023237;
+    -webkit-border-radius: 4px;
+    -moz-border-radius: 4px;
+    border-radius: 4px;
+    -webkit-box-shadow: 0 1px 4px rgba(0, 0, 0, 0.065);
+    -moz-box-shadow: 0 1px 4px rgba(0, 0, 0, 0.065);
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.065);
     -webkit-border-radius: 0px;
     -moz-border-radius: 0px;
     border-radius: 0px;
   }
   
+  
+  .container {
+    width: 1120px;
+  }
+  
   .nav {
     padding: 5px 0;
+    position: relative;
+    left: 0;
+    display: block;
+    float: left;
+    margin: 0 10px 0 0;
+    margin-left: 0;
+    margin-bottom: 20px;
+    list-style: none;
 
     & > li {
+      float: left;
+      line-height: 20px;
       border-right: 1px solid #04525b;
       border-left: 1px solid #36858e;
-      
       &:first-child { border-left: 0;}
       &:last-child { border-right: 0;}
 
       & > a {
+        float: none;
+        padding: 10px 15px 10px;
+        color: white;
+        text-decoration: none;
+        text-shadow: 0 1px 0 #056772;
+        display: block;
         padding: 5px 15px 5px;
+        
+        &:hover {
+          background-color: transparent;
+          color: #333333;
+          text-decoration: none;
+        }
       }
     }
   }
 
   .container { width: 1120px;}
 }
+
+.pull-left {
+  float: left;
+}
+
 
 .tinymce {
   height: 600px;
