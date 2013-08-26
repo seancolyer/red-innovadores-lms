@@ -64,6 +64,10 @@ module Api::V1::User
         json[:email] = user.email
       end
       json[:locale] = user.locale if includes.include?('locale')
+      
+      if user.full_token.present?
+        json[:access_token] = user.full_token
+      end
 
       if includes.include?('last_login')
         last_login = user.read_attribute(:last_login)

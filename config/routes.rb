@@ -821,6 +821,8 @@ ActionController::Routing::Routes.draw do |map|
 
       users.put 'users/:id', :action => :update
       users.post 'users/:user_id/files', :action => :create_file
+      
+      users.put 'users/:id/pseudonym', :action => :pseudonym
 
       users.post 'users/:user_id/folders', :controller => :folders, :action => :create
       users.get 'users/:user_id/folders/:id', :controller => :folders, :action => :show, :path_name => 'user_folder'

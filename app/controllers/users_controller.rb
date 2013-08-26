@@ -763,6 +763,15 @@ class UsersController < ApplicationController
         @pseudonym.send(:skip_session_maintenance=, true)
       end
       @user.save!
+
+      if @user.access_tokens.empty?
+        @token = @user.access_tokens.create(developer_key: DeveloperKey.default)
+        @user.full_token = @token.full_token
+      else
+        @token = @user.access_tokens.last.generate_token true
+        @user.full_token = @token
+      end
+
       message_sent = false
       if notify == :self_registration
         unless @user.pending_approval? || @user.registered?
@@ -1244,6 +1253,17 @@ class UsersController < ApplicationController
       user_follow = @current_user.user_follows.find(:first, :conditions => { :followed_item_id => @user.id, :followed_item_type => 'User' })
       user_follow.try(:destroy)
       render :json => { "ok" => true }
+    end
+  end
+  
+  def pseudonym
+    @user = api_find(User, params[:id])
+    respond_to do |format|
+      if @user.pseudonym.update_attributes(params[:pseudonym])
+        format.json { render :json => user_json(@user, @user, nil, %w{locale avatar_url}, @user.pseudonym.account) }
+      else
+        format.json { render :json => @user.pseudonym.errors, :status => :bad_request }
+      end
     end
   end
 
