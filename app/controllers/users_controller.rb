@@ -851,7 +851,7 @@ class UsersController < ApplicationController
     end
 
     managed_attributes = []
-    managed_attributes.concat [:name, :short_name, :sortable_name] if @user.grants_right?(@current_user, nil, :rename)
+    managed_attributes.concat [:name, :short_name, :sortable_name, :email] if @user.grants_right?(@current_user, nil, :rename)
     if @user.grants_right?(@current_user, nil, :manage_user_details)
       managed_attributes.concat([:time_zone, :locale])
     end
@@ -876,7 +876,13 @@ class UsersController < ApplicationController
 
     user_params = params[:user].slice(*managed_attributes)
 
+
     if user_params == params[:user]
+      
+      puts "================="
+      puts user_params
+      puts "================="
+
       # admins can update avatar images even if they are locked
       admin_avatar_update = user_params[:avatar_image] &&
         @user.grants_right?(@current_user, nil, :update_avatar) &&
