@@ -1,11 +1,12 @@
 define [
   'i18n!discussions'
+  'jquery'
   'compiled/arr/walk'
   'Backbone'
   'jst/discussions/EntryCollectionView'
   'jst/discussions/entryStats'
   'compiled/views/DiscussionTopic/EntryView'
-], (I18n, walk, {View}, template, entryStats, EntryView) ->
+], (I18n, $, walk, {View}, template, entryStats, EntryView) ->
 
   class EntryCollectionView extends View
 
@@ -32,7 +33,7 @@ define [
 
     initialize: ->
       super
-      @attach()
+      @childViews = []
 
     attach: ->
       @collection.on 'reset', @addAll
@@ -54,6 +55,7 @@ define [
         threaded: @options.threaded
         collapsed: @options.collapsed
       view.render()
+      entry.on('change:editor', @nestEntries)
       return @addNewView view if entry.get 'new'
       if @options.descendants
         view.renderTree()
@@ -63,13 +65,22 @@ define [
         @list.prepend view.el
       else
         @list.append view.el
+      @childViews.push(view)
+      @nestEntries()
+
+    nestEntries: ->
+      $('.entry-content[data-should-position]').each ->
+        $el    = $(this)
+        offset = ($el.parents('li.entry').length - 1) * 30
+        $el.css('padding-left', offset).removeAttr('data-should-position')
 
     addNewView: (view) ->
       view.model.set 'new', false
-      if @options.threaded
+      if !@options.threaded and !@options.root
         @list.prepend view.el
       else
         @list.append view.el
+      @nestEntries()
       if not @options.root
         view.$el.hide()
         setTimeout =>

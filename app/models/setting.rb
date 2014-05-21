@@ -17,14 +17,29 @@
 #
 
 class Setting < ActiveRecord::Base
+  # This is needed because Setting is called in Canvas.cache_store_config
+  # before switchman is loaded
+  cattr_accessor :shard_category unless self.respond_to?(:shard_category)
+  self.shard_category = :unsharded
+
   attr_accessible :name, :value
 
   @@cache = {}
+  @@yaml_cache = {}
 
   def self.get(name, default)
-    Setting.find_or_initialize_by_name(name, :value => default).value
+    if @@cache.has_key?(name)
+      @@cache[name]
+    else
+      @@cache[name] = Setting.find_or_initialize_by_name(name, :value => default).value
+    end
   end
-  
+
+  class << self
+    alias_method :get_cached, :get
+  end
+
+  # Note that after calling this, you should send SIGHUP to all running Canvas processes
   def self.set(name, value)
     @@cache.delete(name)
     s = Setting.find_or_initialize_by_name(name)
@@ -42,20 +57,14 @@ class Setting < ActiveRecord::Base
   
   # this cache doesn't get invalidated by other rails processes, obviously, so
   # use this only for relatively unchanging data
-  def self.get_cached(name, default)
-    if @@cache.has_key?(name)
-      @@cache[name]
-    else
-      @@cache[name] = self.get(name, default)
-    end
-  end
-  
+
   def self.clear_cache(name)
     @@cache.delete(name)
   end
   
   def self.reset_cache!
     @@cache = {}
+    @@yaml_cache = {}
   end
   
   def self.remove(name)
@@ -63,32 +72,39 @@ class Setting < ActiveRecord::Base
     s = Setting.find_by_name(name)
     s.destroy if s
   end
-  
-  def self.config_key(config_name, with_rails_env=:current)
-    "yaml_config_#{config_name}_#{with_rails_env == :current ? Rails.env : with_rails_env}"
-  end
 
   def self.set_config(config_name, value)
-    raise "config settings can only be set via config file" unless RAILS_ENV == 'test'
-    @@cache[config_key(config_name)] = value
+    raise "config settings can only be set via config file" unless Rails.env.test?
+    @@yaml_cache[config_name] ||= {}
+    @@yaml_cache[config_name][Rails.env] = value
   end
 
   def self.from_config(config_name, with_rails_env=:current)
-    key = config_key(config_name, with_rails_env)
-    
-    return @@cache[key] if @@cache[key] # if the config wasn't found it'll try again
+    with_rails_env = Rails.env if with_rails_env == :current
+
+    if @@yaml_cache[config_name] # if the config wasn't found it'll try again
+      return @@yaml_cache[config_name] if !with_rails_env
+      return @@yaml_cache[config_name][with_rails_env]
+    end
     
     config = nil
     path = File.join(Rails.root, 'config', "#{config_name}.yml")
     if File.exists?(path)
-      config = YAML.load_file(path)
+      if Rails.env.test?
+        config_string = ERB.new(File.read(path))
+        config = YAML.load(config_string.result)
+      else
+        config = YAML.load_file(path)
+      end
+
       if config.respond_to?(:with_indifferent_access)
         config = config.with_indifferent_access
-        config = config[with_rails_env == :current ? Rails.env : with_rails_env] if with_rails_env
       else
         config = nil
       end
     end
-    @@cache[key] = config
+    @@yaml_cache[config_name] = config
+    config = config[with_rails_env] if config && with_rails_env
+    config
   end
 end

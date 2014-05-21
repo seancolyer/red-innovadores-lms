@@ -20,7 +20,7 @@ class SpecStreamHandler < SOAP::StreamHandler
   end
 end
 
-describe "Respondus SOAP API", :type => :integration do
+describe "Respondus SOAP API", type: :request do
   # args is an array of [ arg_name, value ], not just raw values
   def soap_request(method, userName, password, context, *args)
     soap = SOAP::RPC::Driver.new('test', "urn:RespondusAPI")
@@ -48,7 +48,7 @@ describe "Respondus SOAP API", :type => :integration do
     @user.save!
     @course = factory_with_protected_attributes(Course, course_valid_attributes)
     @course.enroll_teacher(@user).accept
-    @quiz = Quiz.create!(:title => 'quiz1', :context => @course)
+    @quiz = Quizzes::Quiz.create!(:title => 'quiz1', :context => @course)
     @question_bank = AssessmentQuestionBank.create!(:title => 'questionbank1', :context => @course)
   end
 
@@ -229,7 +229,7 @@ Implemented for: Canvas LMS}
                                             ['clearState', ''])
     status.should == "Success"
 
-    mock_migration = ContentMigration.create!
+    mock_migration = ContentMigration.create!(context: @course)
     def mock_migration.export_content
       self.workflow_state = 'imported'
       self.migration_settings[:imported_assets] = ["quiz_xyz"]
@@ -260,7 +260,7 @@ Implemented for: Canvas LMS}
                                               ['clearState', ''])
       status.should == "Success"
 
-      @mock_migration = ContentMigration.create!
+      @mock_migration = ContentMigration.create!(context: @course)
       def @mock_migration.export_content
         self.workflow_state = 'importing'
       end

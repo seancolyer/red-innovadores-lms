@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/helpers/quizzes_common')
 
 describe "quizzes question creation" do
-  it_should_behave_like "quizzes selenium tests"
+  include_examples "quizzes selenium tests"
 
   before (:each) do
     course_with_teacher_logged_in
@@ -28,7 +28,7 @@ describe "quizzes question creation" do
     question_data[:question_type].should == "multiple_choice_question"
     question_data[:correct_comments].should == "Good job on the question!"
     question_data[:incorrect_comments].should == "You know what they say - study long study wrong."
-    question_data[:neutral_comments].should == "Pass or fail, you're a winner!"
+    question_data[:neutral_comments].should == "Pass or fail you are a winner!"
   end
 
 
@@ -36,7 +36,7 @@ describe "quizzes question creation" do
     quiz = @last_quiz
     create_true_false_question
     quiz.reload
-    f("#question_#{quiz.quiz_questions[0].id}").should be_displayed
+    keep_trying_until { f("#question_#{quiz.quiz_questions[0].id}").should be_displayed }
   end
 
   it "should create a quiz question with a fill in the blank question" do
@@ -69,7 +69,7 @@ describe "quizzes question creation" do
     replace_content(answers[0].find_element(:css, '.short_answer input'), 'red')
     replace_content(answers[1].find_element(:css, '.short_answer input'), 'green')
     options[1].click
-    wait_for_animations
+    wait_for_ajaximations
     answers = question.find_elements(:css, ".form_answers > .answer")
 
     replace_content(answers[2].find_element(:css, '.short_answer input'), 'blue')
@@ -136,7 +136,7 @@ describe "quizzes question creation" do
     replace_content(answers[0].find_element(:css, '.select_answer input'), 'red')
     replace_content(answers[1].find_element(:css, '.select_answer input'), 'green')
     options[1].click
-    wait_for_animations
+    wait_for_ajaximations
     answers = question.find_elements(:css, ".form_answers > .answer")
 
     answers[2].find_element(:css, ".select_answer_link").click
@@ -146,7 +146,7 @@ describe "quizzes question creation" do
     submit_form(question)
     wait_for_ajax_requests
 
-    f('#show_question_details').click
+    driver.execute_script("$('#show_question_details').click();")
     quiz.reload
     finished_question = f("#question_#{quiz.quiz_questions[0].id}")
     finished_question.should be_displayed
@@ -168,23 +168,26 @@ describe "quizzes question creation" do
     type_in_tiny '.question:visible textarea.question_content', 'This is a matching question.'
 
     answers = question.find_elements(:css, ".form_answers > .answer")
-    answers[0] = question.find_element(:name, 'answer_match_left').send_keys('first left side')
-    answers[0] = question.find_element(:name, 'answer_match_right').send_keys('first right side')
-    answers[1] = question.find_element(:name, 'answer_match_left').send_keys('second left side')
-    answers[2] = question.find_element(:name, 'answer_match_right').send_keys('second right side')
+
+    answers = answers.each_with_index do |answer, i|
+      answer.find_element(:name, 'answer_match_left').send_keys("#{i} left side")
+      answer.find_element(:name, 'answer_match_right').send_keys("#{i} right side")
+    end
     question.find_element(:name, 'matching_answer_incorrect_matches').send_keys('first_distractor')
 
     submit_form(question)
     wait_for_ajax_requests
 
     f('#show_question_details').click
+
     quiz.reload
     finished_question = f("#question_#{quiz.quiz_questions[0].id}")
     finished_question.should be_displayed
 
-    first_answer = finished_question.find_element(:css, '.answer_match')
-    first_answer.find_element(:css, '.answer_match_left').should include_text('first left side')
-    first_answer.find_element(:css, '.answer_match_right').should include_text('first right side')
+    finished_question.find_elements(:css, '.answer_match').each_with_index do |filled_answer, i|
+      filled_answer.find_element(:css, '.answer_match_left').should include_text("#{i} left side")
+      filled_answer.find_element(:css, '.answer_match_right').should include_text("#{i} right side")
+    end
   end
 
   #### Numerical Answer
@@ -224,7 +227,7 @@ describe "quizzes question creation" do
     fj('button.save_formula_button').click
     # normally it's capped at 200 (to keep the yaml from getting crazy big)...
     # since selenium tests take forever, let's make the limit much lower
-    driver.execute_script("window.maxCombinations = 10")
+    driver.execute_script("ENV.quiz_max_combination_count = 10")
     fj('.combination_count:visible').send_keys('20') # over the limit
     button = fj('button.compute_combinations:visible')
     button.click
@@ -233,7 +236,6 @@ describe "quizzes question creation" do
       button.text == 'Generate'
     }
     ffj('table.combinations:visible tr').size.should == 11 # plus header row
-
     submit_form(question)
     wait_for_ajax_requests
 
@@ -257,6 +259,17 @@ describe "quizzes question creation" do
     finished_question.find_element(:css, '.text').should include_text('This is an essay question.')
   end
 
+  it "should create a quiz question with a file upload question" do
+    quiz = @last_quiz
+
+    create_file_upload_question
+
+    quiz.reload
+    finished_question = f("#question_#{quiz.quiz_questions[0].id}")
+    finished_question.should_not be_nil
+    finished_question.find_element(:css, '.text').should include_text('This is a file upload question.')
+  end
+
   it "should create a quiz question with a text question" do
     quiz = @last_quiz
 
@@ -276,16 +289,18 @@ describe "quizzes question creation" do
   it "should create a quiz with a variety of quiz questions" do
     quiz = @last_quiz
 
+    click_questions_tab
     create_multiple_choice_question
-    f('.add_question_link').click
+    click_new_question_button
     create_true_false_question
-    f('.add_question_link').click
+    click_new_question_button
     create_fill_in_the_blank_question
 
     quiz.reload
     refresh_page #making sure the quizzes load up from the database
+    click_questions_tab
     3.times do |i|
-      f("#question_#{quiz.quiz_questions[i].id}").should be_displayed
+      keep_trying_until(100) {f("#question_#{quiz.quiz_questions[i].id}").should be_displayed}
     end
     questions = ff('.display_question')
     questions[0].should have_class("multiple_choice_question")
@@ -340,6 +355,7 @@ describe "quizzes question creation" do
     end
 
     it "should reorder quiz questions" do
+      click_questions_tab
       old_data = get_question_data
       drag_question_to_top @quest2.id
       refresh_page
@@ -351,11 +367,13 @@ describe "quizzes question creation" do
 
     it "should add and remove questions to/from a group" do
       # drag it into the group
+      click_questions_tab
       drag_question_into_group @quest1.id, @group.id
       refresh_page
       group_should_contain_question(@group, @quest1)
 
       # drag it out
+      click_questions_tab
       drag_question_to_top @quest1.id
       refresh_page
       data = get_question_data
@@ -377,6 +395,8 @@ describe "quizzes question creation" do
     end
 
     it "should reorder groups and questions" do
+      click_questions_tab
+
       old_data = get_question_data
       drag_group_to_top @group.id
       refresh_page
@@ -402,6 +422,7 @@ describe "quizzes question creation" do
 
     it "should allow HTML answers for multiple choice" do
       quiz_with_new_questions
+      click_questions_tab
       edit_first_html_answer
       type_in_tiny '.answer:eq(3) textarea', 'HTML'
       close_first_html_answer
@@ -409,6 +430,7 @@ describe "quizzes question creation" do
       html.should == '<p>HTML</p>'
       submit_form('.question_form')
       refresh_page
+      click_questions_tab
       edit_first_question
       html = driver.execute_script "return $('.answer:eq(3) .answer_html').html()"
       html.should == '<p>HTML</p>'
@@ -422,6 +444,7 @@ describe "quizzes question creation" do
 
     it "should not show the edit html button for question types besides multiple choice and multiple answers" do
       quiz_with_new_questions
+      click_questions_tab
       edit_first_question
 
       check_for_no_edit_button 'True/False'
@@ -434,6 +457,7 @@ describe "quizzes question creation" do
 
     it "should restore normal input when html answer is empty" do
       quiz_with_new_questions
+      click_questions_tab
       edit_first_html_answer
       type_in_tiny '.answer:eq(3) textarea', 'HTML'
 
@@ -446,6 +470,7 @@ describe "quizzes question creation" do
 
     it "should populate the editor and input elements properly" do
       quiz_with_new_questions
+      click_questions_tab
 
       # add text to regular input
       edit_first_question
@@ -469,10 +494,12 @@ describe "quizzes question creation" do
 
     it "should save open html answers when the question is submitted for multiple choice" do
       quiz_with_new_questions
+      click_questions_tab
       edit_first_html_answer
       type_in_tiny '.answer:eq(3) textarea', 'HTML'
       submit_form('.question_form')
       refresh_page
+      click_questions_tab
       edit_first_question
       html = driver.execute_script "return $('.answer:eq(3) .answer_html').html()"
       html.should == '<p>HTML</p>'
@@ -480,10 +507,12 @@ describe "quizzes question creation" do
 
     it "should save open html answers when the question is submitted for multiple answers" do
       quiz_with_new_questions
+      click_questions_tab
       edit_first_html_answer 'Multiple Answers'
       type_in_tiny '.answer:eq(3) textarea', 'HTML'
       submit_form('.question_form')
       refresh_page
+      click_questions_tab
       edit_first_question
       html = driver.execute_script "return $('.answer:eq(3) .answer_html').html()"
       html.should == '<p>HTML</p>'
@@ -493,10 +522,21 @@ describe "quizzes question creation" do
   context "quiz attempts" do
 
     def fill_out_attempts_and_validate(attempts, alert_text, expected_attempt_text)
-      f('#multiple_attempts_option').click
-      f('#limit_attempts_option').click
-      replace_content(f('#quiz_allowed_attempts'), attempts)
-      f('#protect_quiz').click
+      wait_for_ajaximations
+      click_settings_tab
+      sleep 2 # wait for page to load
+      quiz_attempt_field = lambda {
+        set_value(f('#multiple_attempts_option'), false)
+        set_value(f('#multiple_attempts_option'), true)
+        set_value(f('#limit_attempts_option'), false)
+        set_value(f('#limit_attempts_option'), true)
+        replace_content(f('#quiz_allowed_attempts'), attempts)
+        driver.execute_script(%{$('#quiz_allowed_attempts').blur();}) unless alert_present?
+      }
+      keep_trying_until do
+        quiz_attempt_field.call
+        alert_present?
+      end
       alert = driver.switch_to.alert
       alert.text.should == alert_text
       alert.dismiss
@@ -517,39 +557,57 @@ describe "quizzes question creation" do
 
     it "should allow a 3 digit number for a quiz attempt" do
       attempts = "123"
+      click_settings_tab
       f('#multiple_attempts_option').click
       f('#limit_attempts_option').click
       replace_content(f('#quiz_allowed_attempts'), attempts)
-      f('#protect_quiz').click
+      f('#quiz_time_limit').click
       alert_present?.should be_false
       fj('#quiz_allowed_attempts').should have_attribute('value', attempts) # fj to avoid selenium caching
-      f('.save_quiz_button').click
-      wait_for_ajax_requests
-      Quiz.last.allowed_attempts.should == attempts.to_i
+
+      expect_new_page_load {
+        f('.save_quiz_button').click
+        wait_for_ajaximations
+        keep_trying_until { f('.admin-links').should be_displayed }
+      }
+
+      Quizzes::Quiz.last.allowed_attempts.should == attempts.to_i
     end
   end
 
   it "should show errors for graded quizzes but not surveys" do
     quiz_with_new_questions
     change_quiz_type_to 'Graded Survey'
-    save_settings
+    expect_new_page_load {
+      save_settings
+      wait_for_ajax_requests
+    }
 
+    edit_quiz
+    click_questions_tab
     edit_and_save_first_multiple_choice_answer 'instructure!'
     error_displayed?.should be_false
 
     refresh_page
+    click_questions_tab
     edit_and_save_first_multiple_choice_answer 'yog!'
-    error_displayed?.should be_false
 
+    click_settings_tab
     change_quiz_type_to 'Graded Quiz'
-    save_settings
+    expect_new_page_load {
+      save_settings
+      wait_for_ajax_requests
+    }
 
+    edit_quiz
+    click_questions_tab
     edit_first_question
     delete_first_multiple_choice_answer
     save_question
     error_displayed?.should be_true
 
     refresh_page
+    click_questions_tab
     edit_first_question
     delete_first_multiple_choice_answer
     save_question

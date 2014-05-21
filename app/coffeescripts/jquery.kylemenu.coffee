@@ -11,7 +11,10 @@ define [
       @opts = $.extend(true, {}, KyleMenu.defaults, options)
 
       unless @opts.noButton
+        @$trigger.append('<i class="icon-mini-arrow-down"></i>') if @opts.buttonOpts.addDropArrow
         @$trigger.button(@opts.buttonOpts)
+
+
 
         # this is to undo the removal of the 'ui-state-active' class that jquery.ui.button
         # does by default on mouse out if the menu is still open
@@ -38,6 +41,13 @@ define [
         @$placeholder = $('<span style="display:none;">').insertAfter(@$menu)
         @$menu.bind 'click', => @$placeholder.trigger arguments...
 
+      # passing a noifyMenuActiveOn option when initializing a kylemenu helps
+      # get around issue of page-specific parent elements needing to know when the menu
+      # is active and removed. The value of the option is a CSS selector for a parent
+      # element of the trigger.
+      if @opts.notifyMenuActiveOnParent
+        @$notifyParent = @$trigger.closest(@opts.notifyMenuActiveOnParent)
+
       @$menu.on
         menuselect: @select
         popupopen: @onOpen
@@ -46,28 +56,33 @@ define [
     onOpen: (event) =>
       @adjustCarat event
       @$menu.addClass 'ui-state-open'
+      @$notifyParent.addClass('menu_active') if @opts.notifyMenuActiveOnParent
 
     open: ->
       @$menu.popup 'open'
 
     select: (e, ui) =>
       if e.originalEvent?.type != "click" && $target = $(ui.item).find('a')
+        e.preventDefault()
         $target.trigger('click')
-        window.location = $target.attr('href')
-      @$menu.popup('close').removeClass "ui-state-open"
+      @close()
 
     onClose: =>
       @$menu.insertBefore(@$placeholder) if @opts.appendMenuTo
       @$trigger.removeClass 'ui-state-active'
       @$menu.removeClass "ui-state-open"
+      @$notifyParent.removeClass('menu_active') if @opts.notifyMenuActiveOnParent
+
+    close: =>
+      @$menu.popup('close').removeClass('ui-state-open')
 
     keepButtonActive: =>
-      @$trigger.addClass('ui-state-active') if @$menu.is('.ui-state-open')
+      @$trigger.addClass('ui-state-active') if @$menu.is('.ui-state-open') && @$trigger.is('.btn, .ui-button')
 
     # handle sticking the carat right below where you clicked on the button
     adjustCarat: (event) ->
       @$carat?.remove()
-      @$trigger.addClass('ui-state-active')
+      @$trigger.addClass('ui-state-active') if @$trigger.is('.btn, .ui-button')
       triggerWidth = @$trigger.outerWidth()
       triggerOffsetLeft = @$trigger.offset().left
 
@@ -95,9 +110,7 @@ define [
           within: '#main',
           collision: 'fit'
       buttonOpts:
-        icons:
-          primary: "ui-icon-home"
-          secondary: "ui-icon-droparrow"
+        addDropArrow: true
 
 
   #expose jQuery plugin

@@ -58,7 +58,7 @@ describe ContextController do
     end
 
     describe 'across shards' do
-      it_should_behave_like "sharding"
+      specs_require_sharding
 
       it 'allows merged users from other shards to be referenced' do
         user1 = user_model
@@ -83,30 +83,6 @@ describe ContextController do
     end
   end
 
-  describe "GET 'chat'" do
-    it "should redirect if no chats enabled" do
-      course_with_teacher(:active_all => true)
-      get 'chat', :course_id => @course.id, :id => @user.id
-      response.should be_redirect
-    end
-
-    it "should require authorization" do
-      PluginSetting.create!(:name => "tinychat", :settings => {})
-      course_with_teacher(:active_all => true)
-      get 'chat', :course_id => @course.id, :id => @user.id
-      assert_unauthorized
-    end
-
-    it "should redirect 'disabled', if disabled by the teacher" do
-      PluginSetting.create!(:name => "tinychat", :settings => {})
-      course_with_student_logged_in(:active_all => true)
-      @course.update_attribute(:tab_configuration, [{'id'=>9,'hidden'=>true}])
-      get 'chat', :course_id => @course.id
-      response.should be_redirect
-      flash[:notice].should match(/That page has been disabled/)
-    end
-  end
-
   describe "POST 'object_snippet'" do
     before(:each) do
       @obj = "<object data='test'></object>"
@@ -117,7 +93,7 @@ describe ContextController do
 
     it "should require a valid HMAC" do
       post 'object_snippet', :object_data => @data, :s => 'DENIED'
-      response.status.should == '400 Bad Request'
+      assert_status(400)
     end
 
     it "should render given a correct HMAC" do
@@ -187,6 +163,18 @@ describe ContextController do
       @media_object.media_id.should == "new_object"
       @media_object.media_type.should == "audio"
       @media_object.title.should == "title"
+    end
+
+    it "should truncate the title and user_entered_title" do
+      post :create_media_object,
+        :context_code => "user_#{@user.id}",
+        :id => "new_object",
+        :type => "audio",
+        :title => 'x' * 300,
+        :user_entered_title => 'y' * 300
+      @media_object = @user.reload.media_objects.last
+      @media_object.title.size.should <= 255
+      @media_object.user_entered_title.size.should <= 255
     end
   end
 

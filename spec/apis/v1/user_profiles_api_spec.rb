@@ -29,7 +29,7 @@ class TestUserApi
   end
 end
 
-describe "User Profile API", :type => :integration do
+describe "User Profile API", type: :request do
   before do
     @admin = account_admin_user
     course_with_student(:user => user_with_pseudonym(:name => 'Student', :username => 'pvuser@example.com'))
@@ -62,7 +62,8 @@ describe "User Profile API", :type => :integration do
       'primary_email' => nil,
       'title' => nil,
       'bio' => nil,
-      'avatar_url' => "https://secure.gravatar.com/avatar/000?s=50&d=http%3A%2F%2Fwww.example.com%2Fimages%2Fmessages%2Favatar-50.png",
+      'avatar_url' => new_user.gravatar_url,
+      'time_zone' => 'Etc/UTC',
     }
 
     get("/courses/#{@course.id}/students")
@@ -78,10 +79,11 @@ describe "User Profile API", :type => :integration do
       'short_name' => 'User',
       'primary_email' => 'nobody@example.com',
       'login_id' => 'nobody@example.com',
-      'avatar_url' => "https://secure.gravatar.com/avatar/8c5548eb0b2b80924f237953392df5e7?s=50&d=http%3A%2F%2Fwww.example.com%2Fimages%2Fmessages%2Favatar-50.png",
+      'avatar_url' => @admin.gravatar_url,
       'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/user_#{@admin.uuid}.ics" },
       'title' => nil,
       'bio' => nil,
+      'time_zone' => 'Etc/UTC',
     }
   end
 
@@ -96,10 +98,11 @@ describe "User Profile API", :type => :integration do
       'short_name' => 'Student',
       'primary_email' => 'pvuser@example.com',
       'login_id' => 'pvuser@example.com',
-      'avatar_url' => "https://secure.gravatar.com/avatar/7f2ba69d483b221f7bea6145425a19c1?s=50&d=http%3A%2F%2Fwww.example.com%2Fimages%2Fmessages%2Favatar-50.png",
+      'avatar_url' => @student.gravatar_url,
       'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/user_#{@student.uuid}.ics" },
       'title' => nil,
       'bio' => nil,
+      'time_zone' => 'Etc/UTC',
     }
   end
 
@@ -115,14 +118,13 @@ describe "User Profile API", :type => :integration do
     @user = @student
     raw_api_call(:get, "/api/v1/users/#{@admin.id}/profile",
              :controller => "profile", :action => "settings", :user_id => @admin.to_param, :format => 'json')
-    response.status.should == "401 Unauthorized"
-    JSON.parse(response.body).should == {"status"=>"unauthorized", "message"=>"You are not authorized to perform that action."}
+    assert_status(401)
   end
 
   context "user_services" do
     before do
-      @student.user_services.create! :service => 'skype', :service_user_name => 'user', :visible => false
-      @student.user_services.create! :service => 'twitter', :service_user_name => 'user', :visible => true
+      @student.user_services.create! :service => 'skype', :service_user_name => 'user', :service_user_id => 'user', :visible => false
+      @student.user_services.create! :service => 'twitter', :service_user_name => 'user', :service_user_id => 'user', :visible => true
     end
 
     it "should return user_services, if requested" do

@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/common')
 
 describe "account" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   before (:each) do
     course_with_admin_logged_in
@@ -11,8 +11,7 @@ describe "account" do
 
     it "should allow setting up a secondary ldap server" do
       get "/accounts/#{Account.default.id}/account_authorization_configs"
-      f('#add_auth_select').
-          find_element(:css, 'option[value="ldap"]').click
+      click_option('#add_auth_select', 'ldap', :value)
       ldap_div = f('#ldap_div')
       ldap_form = f('form.ldap_form')
       ldap_div.should be_displayed
@@ -26,9 +25,9 @@ describe "account" do
       ldap_form.find_element(:id, 'account_authorization_config_0_auth_password').send_keys('primary password')
       ldap_form.find_element(:id, 'account_authorization_config_0_login_handle_name').send_keys('login handle')
       ldap_form.find_element(:id, 'account_authorization_config_0_change_password_url').send_keys('http://forgot.password.example.com/')
-      expect_new_page_load { submit_form(ldap_form) }
+      submit_form('#auth_form')
 
-      Account.default.account_authorization_configs.length.should == 1
+      keep_trying_until { Account.default.account_authorization_configs.length.should == 1 }
       config = Account.default.account_authorization_configs.first
       config.auth_host.should == 'primary.host.example.com'
       config.auth_port.should == 1
@@ -51,10 +50,9 @@ describe "account" do
       ldap_form.find_element(:id, 'account_authorization_config_1_auth_filter').send_keys('secondary filter')
       ldap_form.find_element(:id, 'account_authorization_config_1_auth_username').send_keys('secondary username')
       ldap_form.find_element(:id, 'account_authorization_config_1_auth_password').send_keys('secondary password')
+      submit_form('#auth_form')
 
-      expect_new_page_load { submit_form(ldap_form) }
-
-      Account.default.account_authorization_configs.length.should == 2
+      keep_trying_until { Account.default.account_authorization_configs.length.should == 2 }
       config = Account.default.account_authorization_configs.first
       config.auth_host.should == 'primary.host.example.com'
       config.auth_over_tls.should == 'simple_tls'
@@ -78,9 +76,9 @@ describe "account" do
       f('.edit_auth_link').click
       ldap_form = f('form.ldap_form')
       ldap_form.find_element(:css, '.remove_secondary_ldap_link').click
-      expect_new_page_load { submit_form(ldap_form) }
+      submit_form('#auth_form')
 
-      Account.default.account_authorization_configs.length.should == 1
+      keep_trying_until { Account.default.account_authorization_configs.length.should == 1 }
 
       # test removing the entire config
       expect_new_page_load do
@@ -109,8 +107,7 @@ describe "account" do
 
     it "should be able to set login labels for delegated auth accounts" do
       get "/accounts/#{Account.default.id}/account_authorization_configs"
-      f('#add_auth_select').
-          find_element(:css, 'option[value="cas"]').click
+      click_option('#add_auth_select', 'cas', :value)
       f("#account_authorization_config_0_login_handle_name").should be_displayed
 
       f("#account_authorization_config_0_auth_base").send_keys("cas.example.com")
@@ -120,7 +117,7 @@ describe "account" do
       get "/accounts/#{Account.default.id}/users"
       f(".add_user_link").click
       dialog = f("#add_user_dialog")
-      dialog.find_element(:css, 'label[for="pseudonym_unique_id"]').text.should == "CAS Username:"
+      dialog.find_element(:css, 'label[for="pseudonym_unique_id"]').text.should == "CAS Username:*"
     end
 
     it "should be able to create a new course" do
@@ -136,7 +133,12 @@ describe "account" do
     end
 
     it "should be able to create a new course when no other courses exist" do
-      Account.default.courses.each { |c| c.destroy! }
+      Account.default.courses.each do |c|
+        c.course_account_associations.scoped.delete_all
+        c.enrollments.scoped.delete_all
+        c.course_sections.scoped.delete_all
+        c.destroy!
+      end
 
       get "/accounts/#{Account.default.to_param}"
       f('.add_course_link').click
@@ -290,8 +292,8 @@ describe "account" do
       @course_name = 'new course'
       @error_text = 'No Results Found'
 
-      course = Course.create!(:account => Account.default, :name => @course_name, :course_code => @course_name)
-      course.reload
+      @course = Course.create!(:account => Account.default, :name => @course_name, :course_code => @course_name)
+      @course.reload
       student_in_course(:name => @student_name)
       get "/accounts/#{Account.default.id}/courses"
     end
@@ -300,6 +302,23 @@ describe "account" do
       find_course_form = f('#new_course')
       submit_input(find_course_form, '#course_name', @course_name)
       f('#section-tabs-header').should include_text(@course_name)
+    end
+
+    it "should correctly autocomplete for courses" do
+      get "/accounts/#{Account.default.id}"
+      f('#course_name').send_keys(@course_name.chop)
+
+      keep_trying_until do
+        ui_auto_complete = f('.ui-autocomplete')
+        ui_auto_complete.should be_displayed
+      end
+
+      element = ff('.ui-autocomplete li a').first
+      element.text.should == @course_name
+      keep_trying_until do
+        driver.execute_script("$('.ui-autocomplete li a').hover().click()")
+        driver.current_url.should include("/courses/#{@course.id}")
+      end
     end
 
     it "should search for an existing user" do
@@ -321,6 +340,20 @@ describe "account" do
       find_user_form = f('#new_user')
       submit_input(find_user_form, '#user_name', 'this student name will not exist', false)
       f('#content').should include_text(@error_text)
+    end
+  end
+
+  describe "user details view" do
+    def create_sub_account(name = 'sub_account', parent_account = Account.default)
+      Account.create(:name => name, :parent_account => parent_account)
+    end
+
+    it "should be able to view user details from parent account" do
+      user_non_root = user
+      create_sub_account.add_user(user_non_root)
+      get "/accounts/#{Account.default.id}/users/#{user_non_root.id}"
+      #verify user details displayed properly
+      f('.accounts .unstyled_list li').should include_text('sub_account')
     end
   end
 end

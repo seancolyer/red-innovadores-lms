@@ -28,7 +28,16 @@
 #     * have a master auditor that fails jobs if a whole pool dies
 #     * audit strands ocasionally, look for any stuck strands where the strand queue isn't empty but there's no strand job running or queued
 module Delayed::Backend::Redis
-class Job < ActiveRecord::Base
+if CANVAS_RAILS2
+  class Job < ActiveRecord::Base; end
+end
+
+class Job
+  unless CANVAS_RAILS2
+    extend ActiveModel::Callbacks
+    define_model_callbacks :create, :save
+    include ActiveModel::Dirty
+  end
   include Delayed::Backend::Base
   # This redis instance needs to be set by the application during jobs configuration
   cattr_accessor :redis
@@ -99,186 +108,13 @@ class Job < ActiveRecord::Base
     raise("Delayed::MAX_PRIORITY must be less than #{WAITING_STRAND_JOB_PRIORITY}")
   end
 
-  def self.reconnect!
-    self.redis.reconnect
-  end
-
   def self.columns
     @@columns ||= []
   end
 
-  def self.functions
-    @@functions ||= Delayed::Backend::Redis::Functions.new
-  end
-
   def self.column(name, sql_type = nil, default = nil, null = true)
     columns << ActiveRecord::ConnectionAdapters::Column.new(name.to_s, default,
-      sql_type.to_s, null)
-  end
-
-  attr_protected
-
-  def self.tableless?
-    true
-  end
-  def self.table_exists?
-    # mostly just override this so .inspect doesn't explode
-    true
-  end
-  def self.table_name
-    raise "Job has no table"
-  end
-
-  def self.find_one(id, options)
-    job = self.get_with_ids([id]).first
-    job || raise(ActiveRecord::RecordNotFound, "Couldn't find Job with ID=#{id}")
-  end
-
-  def self.find_some(ids, options)
-    self.get_with_ids(ids).compact
-  end
-
-  def self.get_with_ids(ids)
-    redis.pipelined {
-      ids.each { |id| redis.hgetall(key_for_job_id(id)) }
-    }.map { |attrs| self.instantiate_from_attrs(attrs) }
-  end
-
-  def self.key_for_job_id(job_id)
-    Keys::JOB[job_id]
-  end
-
-  def self.get_and_lock_next_available(worker_name,
-                                       queue = Delayed::Worker.queue,
-                                       min_priority = Delayed::MIN_PRIORITY,
-                                       max_priority = Delayed::MAX_PRIORITY)
-
-    check_queue(queue)
-    check_priorities(min_priority, max_priority)
-
-    # as an optimization this lua function returns the hash of job attributes,
-    # rather than just a job id, saving a round trip
-    job_attrs = functions.get_and_lock_next_available(redis, worker_name, queue, min_priority, max_priority, db_time_now)
-    instantiate_from_attrs(job_attrs) # will return nil if the attrs are blank
-  end
-
-  def self.find_available(limit,
-                          queue = Delayed::Worker.queue,
-                          min_priority = Delayed::MIN_PRIORITY,
-                          max_priority = Delayed::MAX_PRIORITY)
-
-    check_queue(queue)
-    check_priorities(min_priority, max_priority)
-
-    self.find(functions.find_available(redis, queue, limit, 0, min_priority, max_priority, db_time_now))
-  end
-
-  # get a list of jobs of the given flavor in the given queue
-  # flavor is :current, :future, :failed, :strand or :tag
-  # depending on the flavor, query has a different meaning:
-  # for :current and :future, it's the queue name (defaults to Delayed::Worker.queue)
-  # for :strand it's the strand name
-  # for :tag it's the tag name
-  # for :failed it's ignored
-  def self.list_jobs(flavor,
-                     limit,
-                     offset = 0,
-                     query = nil)
-    case flavor.to_s
-    when 'current'
-      query ||= Delayed::Worker.queue
-      check_queue(query)
-      self.find(functions.find_available(redis, query, limit, offset, nil, nil, db_time_now))
-    when 'future'
-      query ||= Delayed::Worker.queue
-      check_queue(query)
-      self.find(redis.zrangebyscore(Keys::FUTURE_QUEUE[query], 0, "+inf", :limit => [offset, limit]))
-    when 'failed'
-      Failed.find(redis.zrevrangebyscore(Keys::FAILED_JOBS, "+inf", 0, :limit => [offset, limit]))
-    when 'strand'
-      self.find(redis.lrange(Keys::STRAND[query], offset, offset + limit - 1))
-    when 'tag'
-      # This is optimized for writing, since list_jobs(:tag) will only ever happen in the admin UI
-      ids = redis.smembers(Keys::TAG[query])
-      self.find(ids[offset, limit])
-    else
-      raise ArgumentError, "invalid flavor: #{flavor.inspect}"
-    end
-  end
-
-  # get the total job count for the given flavor
-  # flavor is :current, :future or :failed
-  # for the :failed flavor, queue is currently ignored
-  def self.jobs_count(flavor,
-                      queue = Delayed::Worker.queue)
-    case flavor.to_s
-    when 'current'
-      check_queue(queue)
-      redis.zcard(Keys::QUEUE[queue])
-    when 'future'
-      check_queue(queue)
-      redis.zcard(Keys::FUTURE_QUEUE[queue])
-    when 'failed'
-      redis.zcard(Keys::FAILED_JOBS)
-    else
-      raise ArgumentError, "invalid flavor: #{flavor.inspect}"
-    end
-  end
-
-  def self.strand_size(strand)
-    redis.llen(Keys::STRAND[strand])
-  end
-
-  def self.running_jobs()
-    self.find(redis.zrangebyscore(Keys::RUNNING_JOBS, 0, "+inf"))
-  end
-
-  def self.clear_locks!(worker_name)
-    self.running_jobs.each do |job|
-      # TODO: mark the job as failed one attempt
-      job.unlock! if job.locked_by == worker_name
-    end
-  end
-
-  def self.unlock_expired_jobs(max_run_time = Delayed::Worker.max_run_time)
-    cutoff = db_time_now - max_run_time
-    self.find(redis.zrangebyscore(Keys::RUNNING_JOBS, 0, cutoff.utc.to_i)).each do |job|
-      # TODO: mark the job as failed one attempt
-      job.unlock!
-    end
-  end
-
-  # returns a list of hashes { :tag => tag_name, :count => current_count }
-  # in descending count order
-  # flavor is :current or :all
-  def self.tag_counts(flavor,
-                      limit,
-                      offset = 0)
-    raise(ArgumentError, "invalid flavor: #{flavor.inspect}") unless %w(current all).include?(flavor.to_s)
-    key = Keys::TAG_COUNTS[flavor]
-    redis.zrevrangebyscore(key, '+inf', 1, :limit => [offset, limit], :withscores => true).map { |tag, count| { :tag => tag, :count => count } }
-  end
-
-  # perform a bulk update of a set of jobs
-  # action is :hold, :unhold, or :destroy
-  # to specify the jobs to act on, either pass opts[:ids] = [list of job ids]
-  # or opts[:flavor] = <some flavor> to perform on all jobs of that flavor
-  #
-  # see the list_jobs action for the list of available flavors and the meaning
-  # of opts[:query] for each
-  def self.bulk_update(action, opts)
-    if %w(current future).include?(opts[:flavor].to_s)
-      opts[:query] ||= Delayed::Worker.queue
-    end
-    functions.bulk_update(redis, action, opts[:ids], opts[:flavor], opts[:query], db_time_now)
-  end
-
-  def self.create_singleton(options)
-    self.create!(options.merge(:singleton => true))
-  end
-
-  def self.scoped(*a)
-    raise ArgumentError, "Can't scope delayed jobs"
+                                                            sql_type.to_s, null)
   end
 
   column(:id, :string)
@@ -297,6 +133,257 @@ class Job < ActiveRecord::Base
   column(:max_attempts, :integer)
   column(:strand, :string)
 
+  if CANVAS_RAILS2
+    attr_protected
+
+    def self.tableless?
+      true
+    end
+
+    def self.table_exists?
+      # mostly just override this so .inspect doesn't explode
+      true
+    end
+
+    def self.table_name
+      raise "Job has no table"
+    end
+
+    def self.scoped(*a)
+      raise ArgumentError, "Can't scope delayed jobs"
+    end
+  else
+    def attributes
+      @attributes
+    end
+
+    def self.members
+      if !@members
+        @members = columns.map { |c| c.name.to_sym }
+        @members.each do |m|
+          class_eval <<-RUBY
+            def #{m}
+              attributes[#{m.inspect}]
+            end
+
+            def #{m}=(v)
+              #{m}_will_change!
+              attributes[#{m.inspect}] = v
+            end
+          RUBY
+        end
+        define_attribute_methods(@members)
+      end
+      @members
+    end
+
+    def initialize(attrs = {})
+      @attributes = {}.with_indifferent_access
+      self.class.members # make sure accessors are defined
+      attrs.each { |k, v| self.send("#{k}=", v) }
+      self.priority ||= 0
+      self.attempts ||= 0
+      @new_record = true
+    end
+
+    def self.instantiate(attrs)
+      result = new(attrs)
+      result.instance_variable_set(:@new_record, false)
+      result
+    end
+
+    def self.create(attrs = {})
+      result = new(attrs)
+      result.save
+      result
+    end
+
+    def self.create!(attrs = {})
+      result = new(attrs)
+      result.save!
+      result
+    end
+
+    def [](key)
+      attributes[key]
+    end
+
+    def []=(key, value)
+      raise NameError unless self.class.members.include?(key.to_sym)
+      attributes[key] = value
+    end
+
+    def self.find(ids)
+      if Array === ids
+        find_some(ids, {})
+      else
+        find_one(ids, {})
+      end
+    end
+
+    def new_record?
+      !!@new_record
+    end
+
+    def destroyed?
+      !!@destroyed
+    end
+
+    def ==(other)
+      id == other.id
+    end
+
+    def hash
+      id.hash
+    end
+  end
+
+  def self.reconnect!
+    self.redis.reconnect
+  end
+
+  def self.functions
+    @@functions ||= Delayed::Backend::Redis::Functions.new(redis)
+  end
+
+  def self.find_one(id, options)
+    job = self.get_with_ids([id]).first
+    job || raise(ActiveRecord::RecordNotFound, "Couldn't find Job with ID=#{id}")
+  end
+
+  def self.find_some(ids, options)
+    self.get_with_ids(ids).compact
+  end
+
+  def self.get_with_ids(ids)
+    ids.map { |id| self.instantiate_from_attrs(redis.hgetall(key_for_job_id(id))) }
+  end
+
+  def self.key_for_job_id(job_id)
+    Keys::JOB[job_id]
+  end
+
+  def self.get_and_lock_next_available(worker_name,
+      queue = Delayed::Worker.queue,
+      min_priority = Delayed::MIN_PRIORITY,
+      max_priority = Delayed::MAX_PRIORITY)
+
+    check_queue(queue)
+    check_priorities(min_priority, max_priority)
+
+    # as an optimization this lua function returns the hash of job attributes,
+    # rather than just a job id, saving a round trip
+    job_attrs = functions.get_and_lock_next_available(worker_name, queue, min_priority, max_priority, db_time_now)
+    instantiate_from_attrs(job_attrs) # will return nil if the attrs are blank
+  end
+
+  def self.find_available(limit,
+      queue = Delayed::Worker.queue,
+      min_priority = Delayed::MIN_PRIORITY,
+      max_priority = Delayed::MAX_PRIORITY)
+
+    check_queue(queue)
+    check_priorities(min_priority, max_priority)
+
+    self.find(functions.find_available(queue, limit, 0, min_priority, max_priority, db_time_now))
+  end
+
+  # get a list of jobs of the given flavor in the given queue
+  # flavor is :current, :future, :failed, :strand or :tag
+  # depending on the flavor, query has a different meaning:
+  # for :current and :future, it's the queue name (defaults to Delayed::Worker.queue)
+  # for :strand it's the strand name
+  # for :tag it's the tag name
+  # for :failed it's ignored
+  def self.list_jobs(flavor,
+      limit,
+      offset = 0,
+      query = nil)
+    case flavor.to_s
+      when 'current'
+        query ||= Delayed::Worker.queue
+        check_queue(query)
+        self.find(functions.find_available(query, limit, offset, nil, nil, db_time_now))
+      when 'future'
+        query ||= Delayed::Worker.queue
+        check_queue(query)
+        self.find(redis.zrangebyscore(Keys::FUTURE_QUEUE[query], 0, "+inf", :limit => [offset, limit]))
+      when 'failed'
+        Failed.find(redis.zrevrangebyscore(Keys::FAILED_JOBS, "+inf", 0, :limit => [offset, limit]))
+      when 'strand'
+        self.find(redis.lrange(Keys::STRAND[query], offset, offset + limit - 1))
+      when 'tag'
+        # This is optimized for writing, since list_jobs(:tag) will only ever happen in the admin UI
+        ids = redis.smembers(Keys::TAG[query])
+        self.find(ids[offset, limit])
+      else
+        raise ArgumentError, "invalid flavor: #{flavor.inspect}"
+    end
+  end
+
+  # get the total job count for the given flavor
+  # flavor is :current, :future or :failed
+  # for the :failed flavor, queue is currently ignored
+  def self.jobs_count(flavor,
+      queue = Delayed::Worker.queue)
+    case flavor.to_s
+      when 'current'
+        check_queue(queue)
+        redis.zcard(Keys::QUEUE[queue])
+      when 'future'
+        check_queue(queue)
+        redis.zcard(Keys::FUTURE_QUEUE[queue])
+      when 'failed'
+        redis.zcard(Keys::FAILED_JOBS)
+      else
+        raise ArgumentError, "invalid flavor: #{flavor.inspect}"
+    end
+  end
+
+  def self.strand_size(strand)
+    redis.llen(Keys::STRAND[strand])
+  end
+
+  def self.running_jobs()
+    self.find(redis.zrangebyscore(Keys::RUNNING_JOBS, 0, "+inf"))
+  end
+
+  def self.clear_locks!(worker_name)
+    self.running_jobs.each do |job|
+      # TODO: mark the job as failed one attempt
+      job.unlock! if job.locked_by == worker_name
+    end
+  end
+
+  # returns a list of hashes { :tag => tag_name, :count => current_count }
+  # in descending count order
+  # flavor is :current or :all
+  def self.tag_counts(flavor,
+      limit,
+      offset = 0)
+    raise(ArgumentError, "invalid flavor: #{flavor.inspect}") unless %w(current all).include?(flavor.to_s)
+    key = Keys::TAG_COUNTS[flavor]
+    redis.zrevrangebyscore(key, '+inf', 1, :limit => [offset, limit], :withscores => true).map { |tag, count| { :tag => tag, :count => count } }
+  end
+
+  # perform a bulk update of a set of jobs
+  # action is :hold, :unhold, or :destroy
+  # to specify the jobs to act on, either pass opts[:ids] = [list of job ids]
+  # or opts[:flavor] = <some flavor> to perform on all jobs of that flavor
+  #
+  # see the list_jobs action for the list of available flavors and the meaning
+  # of opts[:query] for each
+  def self.bulk_update(action, opts)
+    if %w(current future).include?(opts[:flavor].to_s)
+      opts[:query] ||= Delayed::Worker.queue
+    end
+    functions.bulk_update(action, opts[:ids], opts[:flavor], opts[:query], db_time_now)
+  end
+
+  def self.create_singleton(options)
+    self.create!(options.merge(:singleton => true))
+  end
+
   # not saved, just used as a marker when creating
   attr_accessor :singleton
 
@@ -312,17 +399,33 @@ class Job < ActiveRecord::Base
     save!
   end
 
-  def save(*a)
-    return false if destroyed?
-    callback :before_save
-    result = if new_record?
-      callback :before_create
-      create
-    else
-      update
+  if CANVAS_RAILS2
+    def save(*a)
+      return false if destroyed?
+      callback :before_save
+      result = if new_record?
+                 callback :before_create
+                 create
+               else
+                 update
+               end
+      callback(:after_save) if result
+      result
     end
-    callback(:after_save) if result
-    result
+  else
+    def save(*a)
+      return false if destroyed?
+      result = run_callbacks(:save) do
+        if new_record?
+          run_callbacks(:create) { create }
+        else
+          update
+        end
+      end
+      @previously_changed = changes
+      @changed_attributes.clear
+      result
+    end
   end
 
   def save!(*a)
@@ -330,7 +433,7 @@ class Job < ActiveRecord::Base
   end
 
   def destroy
-    self.class.functions.destroy_job(redis, id, self.class.db_time_now)
+    self.class.functions.destroy_job(id, self.class.db_time_now)
     @destroyed = true
     freeze
   end
@@ -339,7 +442,7 @@ class Job < ActiveRecord::Base
   # was at the front
   def tickle_strand
     if strand.present?
-      self.class.functions.tickle_strand(redis, id, strand, self.class.db_time_now)
+      self.class.functions.tickle_strand(id, strand, self.class.db_time_now)
     end
   end
 
@@ -360,20 +463,20 @@ class Job < ActiveRecord::Base
 
   def update_queues
     if failed_at
-      self.class.functions.fail(redis, id)
+      self.class.functions.fail_job(id)
     elsif locked_at
-      self.class.functions.set_running(redis, id)
+      self.class.functions.set_running(id)
     elsif singleton
-      job_id = self.class.functions.create_singleton(redis, id, queue, strand, self.class.db_time_now)
+      job_id = self.class.functions.create_singleton(id, queue, strand, self.class.db_time_now)
       # if create_singleton returns a different job id, that means this job got
       # deleted because there was already that other job on the strand. so
       # replace this job with the other for returning.
       if job_id != self.id
-        self.id = job_id
-        self.reload
+        singleton = self.class.find(job_id)
+        @attributes = singleton.attributes
       end
     else
-      self.class.functions.enqueue(redis, id, queue, strand, self.class.db_time_now)
+      self.class.functions.enqueue(id, queue, strand, self.class.db_time_now)
     end
   end
 
@@ -387,7 +490,7 @@ class Job < ActiveRecord::Base
     self.id
   end
 
-  def update(attribute_names = @attributes.keys)
+  def update
     self.updated_at = Time.now.utc
     save_job_to_redis
     update_queues
@@ -419,8 +522,9 @@ class Job < ActiveRecord::Base
     if redis_attrs['id'].present?
       # nil attributes don't come back at all
       @attrs_template ||= columns.inject({}) { |h,c| h[c.name] = nil; h }
-      attrs = @attrs_template.dup.merge!(redis_attrs)
+      attrs = @attrs_template.merge(redis_attrs)
       self.time_attribute_names.each { |k| attrs[k] = Time.zone.at(attrs[k].to_f) if attrs[k] }
+      self.integer_attribute_names.each { |k| attrs[k] = attrs[k].to_i if attrs[k] }
       instantiate(attrs)
     else
       nil
@@ -432,6 +536,9 @@ class Job < ActiveRecord::Base
   # need special serialization/deserialization
   def self.time_attribute_names
     @time_attribute_names ||= columns.find_all { |c| c.type == :timestamp }.map { |c| c.name.to_s }
+  end
+  def self.integer_attribute_names
+    @integer_attribute_names ||= columns.find_all { |c| c.type == :integer }.map { |c| c.name.to_s }
   end
 
   def global_id

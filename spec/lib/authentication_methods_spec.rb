@@ -3,8 +3,8 @@ require File.expand_path('../spec_helper', File.dirname(__FILE__))
 
 describe AuthenticationMethods do
 
-  describe '#initiate_delegated_login' do
-    let(:request) { stub(:host_with_port => '' ) }
+  describe '#initiate_delegated_login' do;
+    let(:request) { stub(:host_with_port => '', :host => '' ) }
     let(:controller) { Spec::MockController.new(domain_root_account, request) }
 
     describe 'when auth is not delegated' do
@@ -62,6 +62,7 @@ describe AuthenticationMethods do
       let(:saml_request) { stub(:generate_request => 'saml_login_url') }
 
       before do
+        pending('requires SAML extension') unless AccountAuthorizationConfig.saml_enabled
         Onelogin::Saml::AuthRequest.stubs(:new => saml_request)
       end
 
@@ -84,6 +85,38 @@ describe AuthenticationMethods do
         controller = Spec::MockController.new(domain_root_account, request, :canvas_login => true)
         controller.initiate_delegated_login.should be_false
         controller.redirects.should == []
+      end
+    end
+  end
+
+  describe "#load_user" do
+    before do
+      @request = stub(:env => {'encrypted_cookie_store.session_refreshed_at' => 5.minutes.ago})
+      @controller = Spec::MockController.new(nil, @request)
+      @controller.stubs(:load_pseudonym_from_access_token)
+      @controller.stubs(:api_request?).returns(false)
+    end
+
+    context "with active session" do
+      before do
+        user_with_pseudonym
+        @pseudonym_session = stub(:record => @pseudonym)
+        PseudonymSession.stubs(:find).returns(@pseudonym_session)
+      end
+
+      it "should set the user and pseudonym" do
+        @controller.send(:load_user).should == @user
+        @controller.instance_variable_get(:@current_user).should == @user
+        @controller.instance_variable_get(:@current_pseudonym).should == @pseudonym
+      end
+
+      it "should destroy session if user was explicitly logged out" do
+        @user.stamp_logout_time!
+        @pseudonym.reload
+        @controller.expects(:destroy_session).once
+        @controller.send(:load_user).should be_nil
+        @controller.instance_variable_get(:@current_user).should be_nil
+        @controller.instance_variable_get(:@current_pseudonym).should be_nil
       end
     end
   end

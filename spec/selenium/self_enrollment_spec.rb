@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/common')
 
 describe "self enrollment" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   context "in a full course" do
     it "should not be allowed" do
@@ -25,16 +25,13 @@ describe "self enrollment" do
     it "should register a new user" do
       get "/enroll/#{@course.self_enrollment_code}"
       f("#student_email").send_keys('new@example.com')
-      f('#user_type_new').click
+      f('#initial_action input[value=create]').click
       f("#student_name").send_keys('new guy')
-      f("#enroll_form select[name='user[birthdate(1i)]'] option[value='#{Time.now.year - 20}']").click
-      f("#enroll_form select[name='user[birthdate(2i)]'] option[value='1']").click
-      f("#enroll_form select[name='user[birthdate(3i)]'] option[value='1']").click
       f('#enroll_form input[name="user[terms_of_use]"]').click
       expect_new_page_load {
         submit_form("#enroll_form")
       }
-      f('.btn-primary').text.should eql primary_action
+      f('.btn-primary').text.should == primary_action
       get "/"
       assert_valid_dashboard
     end
@@ -43,12 +40,12 @@ describe "self enrollment" do
       user_with_pseudonym(:active_all => true, :username => "existing@example.com", :password => "asdfasdf")
       get "/enroll/#{@course.self_enrollment_code}"
       f("#student_email").send_keys("existing@example.com")
-      f('#user_type_existing').click
+      f('#initial_action input[value=log_in]').click
       f("#student_password").send_keys("asdfasdf")
       expect_new_page_load {
         submit_form("#enroll_form")
       }
-      f('.btn-primary').text.should eql primary_action
+      f('.btn-primary').text.should == primary_action
       get "/"
       assert_valid_dashboard
     end
@@ -61,7 +58,7 @@ describe "self enrollment" do
       expect_new_page_load {
         submit_form("#enroll_form")
       }
-      f('.btn-primary').text.should eql primary_action
+      f('.btn-primary').text.should == primary_action
       get "/"
       assert_valid_dashboard
     end
@@ -88,7 +85,7 @@ describe "self enrollment" do
       expect_new_page_load {
         submit_form("#enroll_form")
       }
-      f('.btn-primary').text.should eql primary_action
+      f('.btn-primary').text.should == primary_action
       get "/"
       assert_valid_dashboard
     end
@@ -101,7 +98,7 @@ describe "self enrollment" do
       expect_new_page_load {
         submit_form("#enroll_form")
       }
-      f('.btn-primary').text.should eql primary_action
+      f('.btn-primary').text.should == primary_action
       get "/"
       assert_valid_dashboard
     end
@@ -116,10 +113,10 @@ describe "self enrollment" do
     }
     
     context "with open registration" do
-      it_should_behave_like "open registration"
+      include_examples "open registration"
     end
     context "without open registration" do
-      it_should_behave_like "closed registration"
+      include_examples "closed registration"
     end
   end
 
@@ -136,10 +133,10 @@ describe "self enrollment" do
       f('#dashboard').should include_text("You've enrolled in one or more courses that have not started yet")
     }
     context "with open registration" do
-      it_should_behave_like "open registration"
+      include_examples "open registration"
     end
     context "without open registration" do
-      it_should_behave_like "closed registration"
+      include_examples "closed registration"
     end
   end
 
@@ -152,10 +149,10 @@ describe "self enrollment" do
       f('#dashboard').should include_text("You've enrolled in one or more courses that have not started yet")
     }
     context "with open registration" do
-      it_should_behave_like "open registration"
+      include_examples "open registration"
     end
     context "without open registration" do
-      it_should_behave_like "closed registration"
+      include_examples "closed registration"
     end
   end
 

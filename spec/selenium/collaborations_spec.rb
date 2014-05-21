@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/common')
 
 describe "collaborations" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   # Helper methods
   # ==============
@@ -22,14 +22,13 @@ describe "collaborations" do
   def delete_collaboration(collaboration, type = 'etherpad')
     f(".collaboration_#{collaboration.id} .delete_collaboration_link").click
 
-    wait_for_ajaximations
-
     if type == 'google_docs'
+      keep_trying_until { f('#delete_collaboration_dialog .delete_button').should be_displayed }
       f('#delete_collaboration_dialog .delete_button').click
     else
       #driver.switch_to.alert.accept
     end
-    wait_for_ajaximations
+    keep_trying_until { f(".collaboration_#{collaboration.id} .delete_collaboration_link").should be_nil }
   end
 
   # Public: Given an array of collaborations, verify their presence.
@@ -44,14 +43,13 @@ describe "collaborations" do
                               execute_script = false)
     Array(urls).each do |url|
       get url
-
       wait_for_ajaximations
-
       if execute_script
         driver.execute_script 'window.confirm = function(msg) { return true; }'
       end
-
-      form_visible?.should == form_visible
+      keep_trying_until {
+        form_visible?.should == form_visible
+      }
     end
   end
 
@@ -76,6 +74,7 @@ describe "collaborations" do
     @collaboration         = Collaboration.typed_collaboration_instance(title)
     @collaboration.context = @course
     @collaboration.title   = title
+    @collaboration.user = @user
     @collaboration.save!
   end
 
@@ -86,9 +85,17 @@ describe "collaborations" do
           course_with_teacher_logged_in
 
           if type == 'google_docs'
-            CollaborationsController.any_instance.
-              stubs(:google_docs_verify_access_token).
+            GoogleDocs.any_instance.
+              stubs(:verify_access_token).
               returns(true)
+
+            GoogleDocsCollaboration.any_instance.
+                stubs(:initialize_document).
+                returns(nil)
+
+            GoogleDocsCollaboration.any_instance.
+                stubs(:delete_document).
+                returns(nil)
           end
         end
 
@@ -109,7 +116,7 @@ describe "collaborations" do
           end
 
           f('.collaboration .title').text.should == new_title
-          Collaboration.last(:order => 'id DESC').title.should == new_title
+          Collaboration.order("id DESC").last.title.should == new_title
         end
 
         it 'should be delete-able' do
@@ -126,7 +133,7 @@ describe "collaborations" do
           wait_for_ajaximations
 
           f('#no_collaborations_message').should be_displayed
-          Collaboration.last(:order => 'id DESC').should be_deleted
+          Collaboration.order("id DESC").last.should be_deleted
         end
 
         it 'should not display the new collaboration form if other collaborations exist' do
@@ -161,10 +168,12 @@ describe "collaborations" do
           @collaboration1 = Collaboration.typed_collaboration_instance(title)
           @collaboration1.context = @course
           @collaboration1.attributes = {:title => "My Collab 1"}
+          @collaboration1.user = @user
           @collaboration1.save!
           @collaboration2 = Collaboration.typed_collaboration_instance(title)
           @collaboration2.context = @course
           @collaboration2.attributes = {:title => "My Collab 2"}
+          @collaboration2.user = @user
           @collaboration2.save!
 
           validate_collaborations("/courses/#{@course.id}/collaborations/", false, true)
@@ -193,7 +202,9 @@ describe "collaborations" do
 
           wait_for_ajaximations
 
-          ffj('.available-users:visible li').length.should == 1
+          keep_trying_until {
+            ffj('.available-users:visible li').length.should == 1
+          }
         end
 
         it 'should select collaborators' do
@@ -205,9 +216,10 @@ describe "collaborations" do
           get "/courses/#{@course.id}/collaborations"
 
           wait_for_ajaximations
-
           fj('.available-users:visible a').click
-          ffj('.members-list li').length.should == 1
+          keep_trying_until {
+            ffj('.members-list li').length.should == 1
+          }
         end
 
         it 'should deselect collaborators' do

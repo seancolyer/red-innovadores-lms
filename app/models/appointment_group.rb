@@ -19,12 +19,14 @@
 class AppointmentGroup < ActiveRecord::Base
   include Workflow
   include TextHelper
+  include HtmlTextHelper
 
   has_many :appointments, opts = {:class_name => 'CalendarEvent', :as => :context, :order => :start_at, :include => :child_events, :conditions => "calendar_events.workflow_state <> 'deleted'"}
   # has_many :through on the same table does not alias columns in condition
   # strings, just hashes. we create this helper association to ensure
   # appointments_participants conditions have the correct table alias
-  has_many :_appointments, opts.merge(:conditions => opts[:conditions].gsub(/calendar_events\./, 'calendar_events_join.'))
+  has_many :_appointments, opts.merge(:conditions => opts[:conditions].gsub(/calendar_events\./,
+      CANVAS_RAILS2 ? 'calendar_events_join.' : '_appointments_appointments_participants_join.'))
   has_many :appointments_participants, :through => :_appointments, :source => :child_events, :conditions => "calendar_events.workflow_state <> 'deleted'", :order => :start_at
   has_many :appointment_group_contexts
   has_many :appointment_group_sub_contexts, :include => :sub_context
@@ -37,10 +39,15 @@ class AppointmentGroup < ActiveRecord::Base
     appointment_group_contexts.map &:context
   end
 
+  def active_contexts
+    contexts.reject { |context| context.workflow_state == 'deleted' }
+  end
+
   def sub_contexts
     appointment_group_sub_contexts.map &:sub_context
   end
 
+  validates_presence_of :workflow_state
   before_validation :default_values
   before_validation :update_contexts_and_sub_contexts
   before_save :update_cached_values
@@ -86,7 +93,6 @@ class AppointmentGroup < ActiveRecord::Base
   end
   attr_accessor :validation_event_override
   attr_accessor :cancel_reason
-  attr_accessor :context
 
   def reload
     remove_instance_variable :@new_appointments if @new_appointments
@@ -110,6 +116,7 @@ class AppointmentGroup < ActiveRecord::Base
     # sub_contexts. currently this is done in the controller level, since
     # we validate contexts beforehand
     @new_sub_context_codes -= sub_context_codes if @new_sub_context_codes
+    new_sub_contexts = []
     if @new_sub_context_codes.present?
       if new_record? &&
           @new_contexts.size == 1 &&
@@ -137,22 +144,27 @@ class AppointmentGroup < ActiveRecord::Base
           AppointmentGroupSubContext.new(:appointment_group => self,
                                          :sub_context => cs,
                                          :sub_context_code => code)
-        }
-        self.appointment_group_sub_contexts += new_sub_contexts.compact
+        }.compact
       end
     end
 
     # contexts
     @new_contexts -= contexts if @new_contexts
     if @new_contexts.present?
-      unless appointment_group_sub_contexts.size == 1 &&
-          appointment_group_sub_contexts.first.sub_context_type == 'GroupCategory' &&
+      unless (appointment_group_sub_contexts + new_sub_contexts).size == 1 &&
+          (appointment_group_sub_contexts + new_sub_contexts).first.sub_context_type == 'GroupCategory' &&
           !new_record?
         self.appointment_group_contexts += @new_contexts.map { |c|
           AppointmentGroupContext.new :context => c, :appointment_group => self
         }
         @contexts_changed = true
       end
+    end
+
+    if new_sub_contexts.present?
+      # the sub_contexts get validated as soon as we add them in Rails 3,
+      # so we need to add them after we have updated the contexts
+      self.appointment_group_sub_contexts += new_sub_contexts
     end
   end
 
@@ -161,15 +173,20 @@ class AppointmentGroup < ActiveRecord::Base
   end
 
   # complements :reserve permission
-  named_scope :reservable_by, lambda { |user|
-    codes = user.appointment_context_codes
-    {
-      :select => "DISTINCT appointment_groups.*",
-      :joins => "JOIN appointment_group_contexts agc " \
-                "ON appointment_groups.id = agc.appointment_group_id " \
-                "LEFT JOIN appointment_group_sub_contexts sc " \
-                "ON appointment_groups.id = sc.appointment_group_id",
-      :conditions => [<<-COND, codes[:primary], codes[:secondary]]
+  scope :reservable_by, lambda { |*options|
+    user = options.shift
+    restrict_to_codes = options.shift
+
+    codes = user.appointment_context_codes.dup
+    if restrict_to_codes
+      codes[:primary] &= restrict_to_codes
+    end
+    uniq.
+        joins("JOIN appointment_group_contexts agc " \
+              "ON appointment_groups.id = agc.appointment_group_id " \
+              "LEFT JOIN appointment_group_sub_contexts sc " \
+              "ON appointment_groups.id = sc.appointment_group_id").
+        where(<<-COND, codes[:primary], codes[:secondary])
         workflow_state = 'active'
         AND agc.context_code IN (?)
         AND (
@@ -177,10 +194,9 @@ class AppointmentGroup < ActiveRecord::Base
           OR sc.sub_context_code IN (?)
         )
         COND
-    }
   }
   # complements :manage permission
-  named_scope :manageable_by, lambda { |*options|
+  scope :manageable_by, lambda { |*options|
     user = options.shift
     restrict_to_codes = options.shift
 
@@ -189,13 +205,12 @@ class AppointmentGroup < ActiveRecord::Base
       codes[:full] &= restrict_to_codes
       codes[:limited] &= restrict_to_codes
     end
-    {
-      :select => "DISTINCT appointment_groups.*",
-      :joins => "JOIN appointment_group_contexts agc " \
-                "ON appointment_groups.id = agc.appointment_group_id " \
-                "LEFT JOIN appointment_group_sub_contexts sc " \
-                "ON appointment_groups.id = sc.appointment_group_id",
-      :conditions => [<<-COND, codes[:full] + codes[:limited], codes[:full], codes[:secondary]]
+    uniq.
+        joins("JOIN appointment_group_contexts agc " \
+              "ON appointment_groups.id = agc.appointment_group_id " \
+              "LEFT JOIN appointment_group_sub_contexts sc " \
+              "ON appointment_groups.id = sc.appointment_group_id").
+        where(<<-COND, codes[:full] + codes[:limited], codes[:full], codes[:secondary])
         workflow_state <> 'deleted'
         AND agc.context_code IN (?)
         AND (
@@ -203,22 +218,20 @@ class AppointmentGroup < ActiveRecord::Base
           OR sc.sub_context_code IN (?)
         )
         COND
-    }
   }
-  named_scope :current, lambda {
-    {:conditions => ["end_at >= ?", Time.zone.today.to_datetime.utc]}
-  }
-  named_scope :current_or_undated, lambda {
-    {:conditions => ["end_at >= ? OR end_at IS NULL", Time.zone.today.to_datetime.utc]}
-  }
-  named_scope :intersecting, lambda { |start_date, end_date|
-    {:conditions => ["start_at < ? AND end_at > ?", end_date, start_date]}
-  }
+  scope :current, lambda { where("end_at>=?", Time.zone.now.midnight) }
+  scope :current_or_undated, lambda { where("end_at>=? OR end_at IS NULL", Time.zone.now.midnight) }
+  scope :intersecting, lambda { |start_date, end_date| where("start_at<? AND end_at>?", end_date, start_date) }
 
   set_policy do
     given { |user, session|
+      active? && participant_for(user)
+    }
+    can :reserve and can :read
+
+    given { |user, session|
       next false if deleted?
-      next false unless contexts.all? { |c| c.grants_right? user, nil, :manage_calendar }
+      next false unless active_contexts.all? { |c| c.grants_right? user, nil, :manage_calendar }
       if appointment_group_sub_contexts.present? && appointment_group_sub_contexts.first.sub_context_type == 'CourseSection'
         sub_context_ids = appointment_group_sub_contexts.map(&:sub_context_id)
         user_visible_sections = sub_context_ids & contexts.map { |c|
@@ -230,12 +243,6 @@ class AppointmentGroup < ActiveRecord::Base
     }
     can :manage and can :manage_calendar and can :read and can :read_appointment_participants and
     can :create and can :update and can :delete
-
-    given { |user, session|
-      active? &&
-      participant_for(user)
-    }
-    can :reserve and can :read
 
     given { |user, session|
       participant_visibility == 'protected' && grants_right?(user, session, :reserve)
@@ -292,22 +299,18 @@ class AppointmentGroup < ActiveRecord::Base
       else                   participants
     end
 
-    two_tier_cmp = lambda do |a, b, attr1, attr2|
-      cmp = a.send(attr1) <=> b.send(attr1)
-      cmp == 0 ? a.send(attr2) <=> b.send(attr2) : cmp
-    end
-
     if participant_type == 'User'
-      participants.sort { |a,b| two_tier_cmp.call(a, b, :sortable_name, :id) }
+      participants.sort_by { |p| [Canvas::ICU.collation_key(p.sortable_name), p.id] }
     else
-      participants.sort { |a,b| two_tier_cmp.call(a, b, :name, :id) }
+      participants.sort_by { |p| [Canvas::ICU.collation_key(p.name), p.id] }
     end
   end
 
   def participant_ids
     appointments_participants.
-      scoped(:select => 'context_id', :conditions => ["calendar_events.context_type = ?", participant_type]).
-      map(&:context_id)
+        except(:order).
+        where(:context_type => participant_type).
+        pluck(:context_id)
   end
 
   def participant_table
@@ -335,15 +338,19 @@ class AppointmentGroup < ActiveRecord::Base
   end
 
   def participant_for(user)
-    participant = if participant_type == 'User'
-      user
-    else
-      # can't have more than one group_category
-      raise "inconsistent appointment group" if sub_contexts.size > 1
-      sub_context_id = sub_contexts.first.id
-      user.groups.detect{ |g| g.group_category_id == sub_context_id }
+    @participant_for ||= {}
+    return @participant_for[user.global_id] if @participant_for.has_key?(user.global_id)
+    @participant_for[user.global_id] = begin
+      participant = if participant_type == 'User'
+          user
+        else
+          # can't have more than one group_category
+          raise "inconsistent appointment group" if sub_contexts.size > 1
+          sub_context_id = sub_contexts.first.id
+          user.groups.detect{ |g| g.group_category_id == sub_context_id }
+        end
+      participant if participant && eligible_participant?(participant)
     end
-    participant if participant && eligible_participant?(participant)
   end
 
   def reservations_for(participant)
@@ -354,6 +361,7 @@ class AppointmentGroup < ActiveRecord::Base
     self.start_at = appointments.map(&:start_at).min
     self.end_at = appointments.map(&:end_at).max
     clear_cached_available_slots! if participants_per_appointment_changed?
+    true
   end
 
   EVENT_ATTRIBUTES = [
@@ -382,17 +390,17 @@ class AppointmentGroup < ActiveRecord::Base
     desc = changed.delete :description
 
     if changed.present?
-      appointments.update_all changed
+      appointments.update_all(changed)
       changed.delete(:effective_context_code)
     end
 
     if changed.present?
-      CalendarEvent.update_all changed, {:parent_calendar_event_id => appointments.map(&:id), :workflow_state => ['active', 'locked']}
+      CalendarEvent.joins(:parent_event).where(workflow_state: ['active', 'locked'], parent_events_calendar_events: { context_id: self, context_type: 'AppointmentGroup' }).update_all(changed)
     end
 
     if desc
-      appointments.update_all({:description => desc}, :description => description_was)
-      CalendarEvent.update_all({:description => desc}, :parent_calendar_event_id => appointments.map(&:id), :workflow_state => ['active', 'locked'], :description => description_was)
+      appointments.where(:description => description_was).update_all(:description => desc)
+      CalendarEvent.joins(:parent_event).where(workflow_state: ['active', 'locked'], parent_events_calendar_events: { context_id: self, context_type: 'AppointmentGroup' }, description: description_was).update_all(:description => desc)
     end
 
     @new_appointments.each(&:reload) if @new_appointments.present?
@@ -442,16 +450,24 @@ class AppointmentGroup < ActiveRecord::Base
   end
 
   def contexts_for_user(user)
-    context_codes = context_codes_for_user(user)
-    course_ids = appointment_group_contexts.all(:conditions => {:context_code => context_codes}).map(&:context_id)
-    Course.all(:conditions => {:id => course_ids})
+    @contexts_for_user ||= {}
+    return @contexts_for_user[user.global_id] if @contexts_for_user.has_key?(user.global_id)
+    @contexts_for_user[user.global_id] = begin
+      context_codes = context_codes_for_user(user)
+      course_ids = appointment_group_contexts.select{|agc| context_codes.include? agc.context_code }.map(&:context_id)
+      Course.where(:id => course_ids).all
+    end
   end
 
   def context_codes_for_user(user)
-    manageable_codes = user.manageable_appointment_context_codes
-    user_codes = user.appointment_context_codes[:primary] |
-                   manageable_codes[:full] | manageable_codes[:limited]
-    context_codes & user_codes
+    @context_codes_for_user ||= {}
+    @context_codes_for_user[user.global_id] if @context_codes_for_user.has_key?(user.global_id)
+    @context_codes_for_user[user.global_id] = begin
+      manageable_codes = user.manageable_appointment_context_codes
+      user_codes = user.appointment_context_codes[:primary] |
+        manageable_codes[:full] | manageable_codes[:limited]
+      context_codes & user_codes
+    end
   end
 
   def context_codes

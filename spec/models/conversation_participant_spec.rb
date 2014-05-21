@@ -44,13 +44,23 @@ describe ConversationParticipant do
     convo.remove_messages(convo.messages.last)
     convo.messages.reload
     convo.messages.size.should == 1
+    convo.all_messages.size.should == 2
     # the recipient's messages are unaffected, since removing a message
-    # only removes it from the join table
+    # only sets workflow state on the join table.
     rconvo.messages.size.should == 2
 
     convo.remove_messages(:all)
+    convo.messages.size.should == 0
+    convo.all_messages.size.should == 2
     rconvo.reload
     rconvo.messages.size.should == 2
+
+    convo.delete_messages(:all)
+    convo.all_messages.size.should == 0
+
+    rconvo.delete_messages(rconvo.messages.last)
+    rconvo.messages.size.should == 1
+    rconvo.all_messages.size.should == 1
   end
 
   it "should update the updated_at stamp of its user on workflow_state change" do
@@ -152,6 +162,18 @@ describe ConversationParticipant do
     it "should return conversations that match both the given course and user" do
       @me.conversations.tagged(@u1.asset_string, "course_1", :mode => :and).sort_by(&:id).should eql [@c8]
     end
+
+    context "sharding" do
+      specs_require_sharding
+
+      it "should find conversations for users on different shards" do
+        @shard1.activate do
+          @u3 = user
+          @c9 = conversation_for(@u3)
+        end
+        @me.conversations.tagged(@u3.asset_string).map(&:conversation).should == [@c9.conversation]
+      end
+    end
   end
 
   context "for_masquerading_user scope" do
@@ -181,9 +203,10 @@ describe ConversationParticipant do
 
     it "should let site admins see everything" do
       Account.site_admin.add_user(@admin_user)
+      Account.site_admin.stubs(:grants_right?).with(@admin_user, :become_user).returns(false)
       convos = @target_user.conversations.for_masquerading_user(@admin_user)
       convos.size.should eql 4
-      convos.should eql @target_user.conversations.to_a
+      convos.should == @target_user.conversations.to_a
     end
 
     it "should limit others to their associated root accounts" do
@@ -212,8 +235,8 @@ describe ConversationParticipant do
     it "should not include shared contexts by default" do
       users = @convo.reload.participants
       users.each do |user|
-        user.common_groups.should be_nil
-        user.common_courses.should be_nil
+        user.common_groups.should be_empty
+        user.common_courses.should be_empty
       end
     end
 
@@ -254,7 +277,7 @@ describe ConversationParticipant do
       c.move_to_user @user2
 
       c.reload.user_id.should eql @user2.id
-      c.conversation.participants.should_not include(@user1)
+      c.conversation.participants.map(&:id).should_not include(@user1.id)
       @user1.reload.unread_conversations_count.should eql 0
       @user2.reload.unread_conversations_count.should eql 1
     end
@@ -272,8 +295,8 @@ describe ConversationParticipant do
 
       rconvo.reload
       rconvo.participants.size.should eql 3
-      rconvo.participants.should_not include(@user1)
-      rconvo.participants.should include(@user2)
+      rconvo.participants.map(&:id).should_not include(@user1.id)
+      rconvo.participants.map(&:id).should include(@user2.id)
       @user1.reload.unread_conversations_count.should eql 0
       @user2.reload.unread_conversations_count.should eql 1
     end
@@ -391,7 +414,7 @@ describe ConversationParticipant do
       ConversationParticipant.send :with_scope, :find => {:conditions => ["user_id = ?", @user1.id]} do
         c.move_to_user @user2
       end
-  
+
       lambda{ c.reload }.should raise_error # deleted
       lambda{ Conversation.find(c.conversation_id) }.should raise_error # deleted
 
@@ -406,7 +429,7 @@ describe ConversationParticipant do
     end
 
     context "sharding" do
-      it_should_behave_like "sharding"
+      specs_require_sharding
 
       it "should be able to move to a user on a different shard" do
         u1 = User.create!

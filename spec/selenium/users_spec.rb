@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/common')
 
 describe "users" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   context "logins" do
     it "should allow setting passwords for new pseudonyms" do
@@ -15,6 +15,7 @@ describe "users" do
       get "/users/#{@user.id}"
       pseudonym_form = f('#edit_pseudonym_form')
       f(".add_pseudonym_link").click
+      wait_for_ajaximations
       pseudonym_form.find_element(:css, "#pseudonym_unique_id").send_keys('new_user')
       pseudonym_form.find_element(:css, "#pseudonym_password").send_keys('qwerty1')
       pseudonym_form.find_element(:css, "#pseudonym_password_confirmation").send_keys('qwerty1')
@@ -32,7 +33,7 @@ describe "users" do
   context "page views" do
 
     before (:each) do
-      @teacher = course_with_teacher_logged_in
+      course_with_admin_logged_in
       @student = student_in_course.user
       Setting.set('enable_page_views', 'db')
     end
@@ -139,7 +140,7 @@ describe "users" do
       user_names[0].should include_text(@student_2.name)
       user_names[1].should include_text(@student_1.name)
       f('#switch_user_positions').click
-      wait_for_ajax_requests
+      wait_for_ajaximations
       user_names = ff('.result td')
       user_names[0].should include_text(@student_1.name)
       user_names[1].should include_text(@student_2.name)
@@ -153,7 +154,9 @@ describe "users" do
     it "should cancel a merge and validate both users still exist" do
       setup_user_merge(@student_2, @student_1)
       expect_new_page_load { f('#prepare_to_merge').click }
+      wait_for_ajaximations
       expect_new_page_load { f('.button-secondary').click }
+      wait_for_ajaximations
       f('#courses_menu_item').should be_displayed
       @student_1.workflow_state.should == 'registered'
       @student_2.workflow_state.should == 'registered'
@@ -161,26 +164,28 @@ describe "users" do
 
     it "should show an error if the user id entered is the current users" do
       get "/users/#{@student_1.id}/admin_merge"
-      f('.static_message').should be_false
+      flash_message_present?(:error).should be_false
       f('#manual_user_id').send_keys(@student_1.id)
       expect_new_page_load { f('button[type="submit"]').click }
-      f('.static_message').text.should =~ /You can't merge an account with itself./
+      wait_for_ajaximations
+      flash_message_present?(:error, /You can't merge an account with itself./).should be_true
     end
 
     it "should show an error if invalid text is entered in the id box" do
       get "/users/#{@student_1.id}/admin_merge"
-      f('.static_message').should be_false
+      flash_message_present?(:error).should be_false
       f('#manual_user_id').send_keys("azxcvbytre34567uijmm23456yhj")
       expect_new_page_load { f('button[type="submit"]').click }
-      f('.static_message').text.should =~ /No active user with that ID was found./
+      wait_for_ajaximations
+      flash_message_present?(:error, /No active user with that ID was found./).should be_true
     end
 
     it "should show an error if the user id doesnt exist" do
       get "/users/#{@student_1.id}/admin_merge"
-      f('.static_message').should be_false
+      flash_message_present?(:error).should be_false
       f('#manual_user_id').send_keys(1234567809)
       expect_new_page_load { f('button[type="submit"]').click }
-      f('.static_message').text.should =~ /No active user with that ID was found./
+      flash_message_present?(:error, /No active user with that ID was found./).should be_true
     end
   end
 
@@ -191,9 +196,37 @@ describe "users" do
       a.save!
     end
 
+    it "should not require terms if not configured to do so" do
+      Setting.set('terms_required', 'false')
+
+      get '/register'
+
+      %w{teacher student parent}.each do |type|
+        f("#signup_#{type}").click
+        form = fj('.ui-dialog:visible form')
+        f('input[name="user[terms_of_use]"]', form).should be_nil
+        fj('.ui-dialog-titlebar-close:visible').click
+      end
+    end
+
+    it "should require terms if configured to do so" do
+      get "/register"
+
+      %w{teacher student parent}.each do |type|
+        f("#signup_#{type}").click
+        form = fj('.ui-dialog:visible form')
+        input = f('input[name="user[terms_of_use]"]', form)
+        input.should_not be_nil
+        form.submit
+        wait_for_ajaximations
+        assert_error_box 'input[name="user[terms_of_use]"]:visible'
+        fj('.ui-dialog-titlebar-close:visible').click
+      end
+    end
+
     it "should register a student with a join code" do
       course(:active_all => true)
-      @course.update_attribute :self_enrollment, true
+      @course.update_attribute(:self_enrollment, true)
 
       get '/register'
       f('#signup_student').click
@@ -201,38 +234,15 @@ describe "users" do
       form = fj('.ui-dialog:visible form')
       f('#student_join_code').send_keys(@course.self_enrollment_code)
       f('#student_name').send_keys('student!')
-      form.find_element(:css, "select[name='user[birthdate(1i)]'] option[value='#{Time.now.year - 20}']").click
-      form.find_element(:css, "select[name='user[birthdate(2i)]'] option[value='1']").click
-      form.find_element(:css, "select[name='user[birthdate(3i)]'] option[value='1']").click
       f('#student_username').send_keys('student')
       f('#student_password').send_keys('asdfasdf')
       f('#student_password_confirmation').send_keys('asdfasdf')
-      form.find_element(:css, 'input[name="user[terms_of_use]"]').click
+      f('input[name="user[terms_of_use]"]', form).click
 
       expect_new_page_load { form.submit }
       # confirm the user is authenticated into the dashboard
       f('#identity .logout').should be_present
-      User.last.initial_enrollment_type.should eql 'student'
-    end
-
-    it "should register a student without a join code" do
-      get '/register'
-      f('#signup_student').click
-
-      f('.registration-dialog .signup_link').click
-
-      form = fj('.ui-dialog:visible form')
-      f('#student_higher_ed_name').send_keys('student!')
-      f('#student_higher_ed_email').send_keys('student@example.com')
-      form.find_element(:css, "select[name='user[birthdate(1i)]'] option[value='#{Time.now.year - 20}']").click
-      form.find_element(:css, "select[name='user[birthdate(2i)]'] option[value='1']").click
-      form.find_element(:css, "select[name='user[birthdate(3i)]'] option[value='1']").click
-      form.find_element(:css, 'input[name="user[terms_of_use]"]').click
-
-      expect_new_page_load { form.submit }
-      # confirm the user is authenticated into the dashboard
-      f('#identity .logout').should be_present
-      User.last.initial_enrollment_type.should eql 'student'
+      User.last.initial_enrollment_type.should == 'student'
     end
 
     it "should register a teacher" do
@@ -242,12 +252,21 @@ describe "users" do
       form = fj('.ui-dialog:visible form')
       f('#teacher_name').send_keys('teacher!')
       f('#teacher_email').send_keys('teacher@example.com')
-      form.find_element(:css, 'input[name="user[terms_of_use]"]').click
+
+      # if instructure_misc_plugin is installed, number of registration fields increase
+      if (Dir.exists?('./vendor/plugins/instructure_misc_plugin'))
+        f('#teacher_school_position').send_keys('Dean')
+        f('#teacher_phone').send_keys('1231231234')
+        f('#teacher_school_name').send_keys('example org')
+        f('#teacher_organization_type').send_keys('Higher Ed')
+      end
+
+      f('input[name="user[terms_of_use]"]', form).click
 
       expect_new_page_load { form.submit }
       # confirm the user is authenticated into the dashboard
       f('#identity .logout').should be_present
-      User.last.initial_enrollment_type.should eql 'teacher'
+      User.last.initial_enrollment_type.should == 'teacher'
     end
 
     it "should register an observer" do
@@ -261,12 +280,12 @@ describe "users" do
       f('#parent_email').send_keys('parent@example.com')
       f('#parent_child_username').send_keys(@pseudonym.unique_id)
       f('#parent_child_password').send_keys('lolwut')
-      form.find_element(:css, 'input[name="user[terms_of_use]"]').click
+      f('input[name="user[terms_of_use]"]', form).click
 
       expect_new_page_load { form.submit }
       # confirm the user is authenticated into the dashboard
       f('#identity .logout').should be_present
-      User.last.initial_enrollment_type.should eql 'observer'
+      User.last.initial_enrollment_type.should == 'observer'
     end
   end
 
@@ -276,12 +295,12 @@ describe "users" do
       user_with_pseudonym(:active_user => true, :name => "The Student")
       get "/users/#{@user.id}/masquerade"
       f('.masquerade_button').click
-      wait_for_dom_ready
+      wait_for_ajaximations
       f("#identity .user_name").should include_text "The Student"
       bar = f("#masquerade_bar")
       bar.should include_text "You are currently masquerading"
       bar.find_element(:css, ".stop_masquerading").click
-      wait_for_dom_ready
+      wait_for_ajaximations
       f("#identity .user_name").should include_text "The Admin"
     end
   end

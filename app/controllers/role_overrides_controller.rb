@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -19,70 +19,73 @@
 # @API Roles
 # API for managing account- and course-level roles, and their associated permissions.
 #
-# @object Role
-#   {
-#     // The label and unique identifier of the role.
-#     "role": "New Role",
-#
-#     // The role type that is being used as a base for this role.
-#     // For account-level roles, this is "AccountMembership".
-#     // For course-level roles, it is an enrollment type.
-#     "base_role_type": "AccountMembership"
-#
-#     // JSON representation of the account the role is in.
-#     "account": {
-#       "id": 1019,
-#       "name": "CGNU",
-#       "parent_account_id": 73,
-#       "root_account_id": 1,
-#       "sis_account_id": "cgnu"
-#     },
-#
-#     // The state of the role: "active" or "inactive"
-#     "workflow_state": "active",
-#
-#     // A dictionary of permissions keyed by name (see permissions input
-#     // parameter in the "Create a role" API). The value for a given permission
-#     // is a dictionary of the following boolean flags:
-#     // - enabled:  Whether the role has the permission.
-#     // - locked: Whether the permission is locked by this role.
-#     // - readonly: Whether the permission can be modified in this role (i.e.
-#     //     whether the permission is locked by an upstream role).
-#     // - explicit: Whether the value of enabled is specified explicitly by
-#     //     this role, or inherited from an upstream role.
-#     // - prior_default: The value that would have been inherited from upstream
-#     //     if the role had not explicitly set a value. Only present if explicit
-#     //     is true.
-#     "permissions": {
-#       "read_course_content": {
-#         "enabled": true,
-#         "locked": false,
-#         "readonly": false,
-#         "explicit": true,
-#         "prior_default": false
-#       },
-#       "read_course_list": {
-#         "enabled": true,
-#         "locked": true,
-#         "readonly": true,
-#         "explicit": false
-#       },
-#       "read_question_banks": {
-#         "enabled": false,
-#         "locked": true,
-#         "readonly": false,
-#         "explicit": true,
-#         "prior_default": false
-#       },
-#       "read_reports": {
-#         "enabled": true,
-#         "locked": false,
-#         "readonly": false,
-#         "explicit": false
-#       },
-#       ...
+# @model RolePermissions
+#     {
+#       "id": "RolePermissions",
+#       "description": "",
+#       "properties": {
+#         "enabled": {
+#           "description": "Whether the role has the permission",
+#           "example": true,
+#           "type": "boolean"
+#         },
+#         "locked": {
+#           "description": "Whether the permission is locked by this role",
+#           "example": false,
+#           "type": "boolean"
+#         },
+#         "readonly": {
+#           "description": "Whether the permission can be modified in this role (i.e. whether the permission is locked by an upstream role).",
+#           "example": false,
+#           "type": "boolean"
+#         },
+#         "explicit": {
+#           "description": "Whether the value of enabled is specified explicitly by this role, or inherited from an upstream role.",
+#           "example": true,
+#           "type": "boolean"
+#         },
+#         "prior_default": {
+#           "description": "The value that would have been inherited from upstream if the role had not explicitly set a value. Only present if explicit is true.",
+#           "example": false,
+#           "type": "boolean"
+#         }
+#       }
 #     }
-#   }
+#
+# @model Role
+#     {
+#       "id": "Role",
+#       "description": "",
+#       "properties": {
+#         "role": {
+#           "description": "The label and unique identifier of the role.",
+#           "example": "New Role",
+#           "type": "string"
+#         },
+#         "base_role_type": {
+#           "description": "The role type that is being used as a base for this role. For account-level roles, this is 'AccountMembership'. For course-level roles, it is an enrollment type.",
+#           "example": "AccountMembership",
+#           "type": "string"
+#         },
+#         "account": {
+#           "description": "JSON representation of the account the role is in.",
+#           "example": "{\"id\"=>1019, \"name\"=>\"CGNU\", \"parent_account_id\"=>73, \"root_account_id\"=>1, \"sis_account_id\"=>\"cgnu\"}",
+#           "$ref": "Account"
+#         },
+#         "workflow_state": {
+#           "description": "The state of the role: 'active' or 'inactive'",
+#           "example": "active",
+#           "type": "string"
+#         },
+#         "permissions": {
+#           "description": "A dictionary of permissions keyed by name (see permissions input parameter in the 'Create a role' API).",
+#           "example": "{\"read_course_content\"=>{\"enabled\"=>true, \"locked\"=>false, \"readonly\"=>false, \"explicit\"=>true, \"prior_default\"=>false}, \"read_course_list\"=>{\"enabled\"=>true, \"locked\"=>true, \"readonly\"=>true, \"explicit\"=>false}, \"read_question_banks\"=>{\"enabled\"=>false, \"locked\"=>true, \"readonly\"=>false, \"explicit\"=>true, \"prior_default\"=>false}, \"read_reports\"=>{\"enabled\"=>true, \"locked\"=>false, \"readonly\"=>false, \"explicit\"=>false}}",
+#           "type": "map",
+#           "key": { "type": "string" },
+#           "value": { "$ref": "RolePermissions" }
+#         }
+#       }
+#     }
 #
 class RoleOverridesController < ApplicationController
   before_filter :require_context
@@ -92,9 +95,12 @@ class RoleOverridesController < ApplicationController
   # @API List roles
   # List the roles available to an account.
   #
-  # @argument account_id The id of the account to retrieve roles for.
-  # @argument state[] Filter by role state. Accepted values are 'active' and 'inactive'. If this argument
-  #   is omitted, only 'active' roles are returned.
+  # @argument account_id [String]
+  #   The id of the account to retrieve roles for.
+  #
+  # @argument state[] [String, "active"|"inactive"]
+  #   Filter by role state. If this argument is omitted, only 'active' roles are
+  #   returned.
   #
   # @returns [Role]
   def api_index
@@ -104,7 +110,7 @@ class RoleOverridesController < ApplicationController
       states = %w(active) if states.empty?
       roles = []
       roles += Role.built_in_roles if states.include?('active')
-      roles += @context.roles.scoped(:conditions => {:workflow_state => states}, :order => :id).all
+      roles += @context.roles.where(:workflow_state => states).order(:id).all
       roles = Api.paginate(roles, self, route)
       render :json => roles.collect{|role| role_json(@context, role, @current_user, session)}
     end
@@ -150,8 +156,11 @@ class RoleOverridesController < ApplicationController
   # @API Get a single role
   # Retrieve information about a single role
   #
-  # @argument account_id The id of the account containing the role
-  # @argument role The name and unique identifier for the role
+  # @argument account_id [String]
+  #   The id of the account containing the role
+  #
+  # @argument role [String]
+  #   The name and unique identifier for the role
   #
   # @returns Role
   def show
@@ -168,17 +177,18 @@ class RoleOverridesController < ApplicationController
   # @API Create a new role
   # Create a new course-level or account-level role.
   #
-  # @argument role
+  # @argument role [String]
   #   Label and unique identifier for the role.
   #
-  # @argument base_role_type [Optional] Accepted values are 'AccountMembership', 'StudentEnrollment', 'TeacherEnrollment', 'TaEnrollment', 'ObserverEnrollment', and 'DesignerEnrollment'
+  # @argument base_role_type [Optional, String, "AccountMembership"|"StudentEnrollment"|"TeacherEnrollment"|"TaEnrollment"|"ObserverEnrollment"|"DesignerEnrollment"]
   #   Specifies the role type that will be used as a base
   #   for the permissions granted to this role.
   #
   #   Defaults to 'AccountMembership' if absent
   #
-  # @argument permissions[<X>][explicit] [Optional]
-  # @argument permissions[<X>][enabled] [Optional]
+  # @argument permissions[<X>][explicit] [Optional, Boolean]
+  #
+  # @argument permissions[<X>][enabled] [Optional, Boolean]
   #   If explicit is 1 and enabled is 1, permission <X> will be explicitly
   #   granted to this role. If explicit is 1 and enabled has any other value
   #   (typically 0), permission <X> will be explicitly denied to this role. If
@@ -199,6 +209,7 @@ class RoleOverridesController < ApplicationController
   #     manage_global_outcomes           -- Manage learning outcomes
   #     manage_jobs                      -- Manage background jobs
   #     manage_role_overrides            -- Manage permissions
+  #     manage_storage_quotas            -- Set storage quotas for courses, groups, and users
   #     manage_sis                       -- Import and manage SIS data
   #     manage_site_settings             -- Manage site-wide and plugin settings
   #     manage_user_logins               -- Modify login details for users
@@ -208,6 +219,7 @@ class RoleOverridesController < ApplicationController
   #     site_admin                       -- Use the Site Admin section and admin all other accounts
   #     view_error_reports               -- View error reports
   #     view_statistics                  -- View statistics
+  #     manage_feature_flags             -- Enable or disable features at an account level
   #
   #     [For both Account-Level and Course-Level roles]
   #      Note: Applicable enrollment types for course-level roles are given in brackets:
@@ -224,19 +236,20 @@ class RoleOverridesController < ApplicationController
   #     manage_calendar                  -- [sTADo] Add, edit and delete events on the course calendar
   #     manage_content                   -- [ TADo] Manage all other course content
   #     manage_files                     -- [ TADo] Manage (add / edit / delete) course files
-  #     manage_grades                    -- [ TA  ] Edit grades (includes assessing rubrics)
+  #     manage_grades                    -- [ TA  ] Edit grades
   #     manage_groups                    -- [ TAD ] Manage (create / edit / delete) groups
   #     manage_interaction_alerts        -- [ Ta  ] Manage alerts
   #     manage_outcomes                  -- [sTaDo] Manage learning outcomes
   #     manage_sections                  -- [ TaD ] Manage (create / edit / delete) course sections
   #     manage_students                  -- [ TAD ] Add/remove students for the course
   #     manage_user_notes                -- [ TA  ] Manage faculty journal entries
+  #     manage_rubrics                   -- [ TAD ] Edit assessing rubrics
   #     manage_wiki                      -- [ TADo] Manage wiki (add / edit / delete pages)
   #     read_forum                       -- [STADO] View discussions
   #     moderate_forum                   -- [sTADo] Moderate discussions (delete/edit others' posts, lock topics)
   #     post_to_forum                    -- [STADo] Post to discussions
   #     read_question_banks              -- [ TADo] View and link to question banks
-  #     read_reports                     -- [sTAD ] View usage reports for the course
+  #     read_reports                     -- [ TAD ] View usage reports for the course
   #     read_roster                      -- [STADo] See the list of users
   #     read_sis                         -- [sTa  ] Read SIS data
   #     send_messages                    -- [STADo] Send messages to individual course members
@@ -250,14 +263,14 @@ class RoleOverridesController < ApplicationController
   #
   #   Additional permissions may exist based on installed plugins.
   #
-  # @argument permissions[<X>][locked] [Optional]
+  # @argument permissions[<X>][locked] [Optional, Boolean]
   #   If the value is 1, permission <X> will be locked downstream (new roles in
   #   subaccounts cannot override the setting). For any other value, permission
   #   <X> is left unlocked. Ignored if permission <X> is already locked
   #   upstream. May occur multiple times with unique values for <X>.
   #
   # @example_request
-  #   curl 'http://<canvas>/api/v1/accounts/<account_id>/roles.json' \ 
+  #   curl 'https://<canvas>/api/v1/accounts/<account_id>/roles.json' \
   #        -H "Authorization: Bearer <token>" \ 
   #        -F 'role=New Role' \ 
   #        -F 'permissions[read_course_content][explicit]=1' \ 
@@ -292,7 +305,7 @@ class RoleOverridesController < ApplicationController
       return
     end
     # remove old role overrides that were associated with this role name
-    @context.role_overrides.scoped(:conditions => {:enrollment_type => @role}).delete_all
+    @context.role_overrides.where(:enrollment_type => @role).delete_all
 
     unless api_request?
       redirect_to named_context_url(@context, :context_permissions_url, :account_roles => params[:account_roles])
@@ -318,7 +331,7 @@ class RoleOverridesController < ApplicationController
   # continue to function with the same permissions they had previously.
   # Built-in roles cannot be deactivated.
   #
-  # @argument role
+  # @argument role [String]
   #   Label and unique identifier for the role.
   #
   # @returns Role
@@ -336,7 +349,7 @@ class RoleOverridesController < ApplicationController
   # @API Activate a role
   # Re-activates an inactive role (allowing it to be assigned to new users)
   #
-  # @argument role
+  # @argument role [String]
   #   Label and unique identifier for the role.
   #
   # @returns Role
@@ -363,9 +376,10 @@ class RoleOverridesController < ApplicationController
   # * AccountAdmin
   # * Any previously created custom role
   #
-  # @argument permissions[<X>][explicit] [Optional]
-  # @argument permissions[<X>][enabled] [Optional]
-  #   These arguments are described in the documentation for the {api:RoleOverridesController#add_role add_role method}.
+  # @argument permissions[<X>][explicit] [Optional, Boolean]
+  # @argument permissions[<X>][enabled] [Optional, Boolean]
+  #   These arguments are described in the documentation for the
+  #   {api:RoleOverridesController#add_role add_role method}.
   #
   # @example_request
   #   curl https://<canvas>/api/v1/accounts/:account_id/roles/TaEnrollment \ 
@@ -510,29 +524,49 @@ class RoleOverridesController < ApplicationController
     res
   end
 
-  # Returns a hash with the avalible permissions grouped by groups of permissions.
+  # Returns a hash with the avalible permissions grouped by groups of permissions. Permission hash looks like this
+  #
+  # ie: 
+  #   {
+  #     :group_name => "Example Name",
+  #     :group_permissions => [
+  #       {
+  #         :label => "Some Label"
+  #         :permission_name => "Some Permission Name"
+  #       }, 
+  #       {
+  #         :label => "Some Label"
+  #         :permission_name => "Some Permission Name"
+  #       }
+  #     ]
   # context - the current context
   def account_permissions(context)
+    # Add group_names
     site_admin = {:group_name => t('site_admin_permissions', "Site Admin Permissions"), :group_permissions => []}
     account = {:group_name => t('account_permissions', "Account Permissions"), :group_permissions => []}
     course = {:group_name => t('course_permissions',  "Course & Account Permissions"), :group_permissions => []}
+    admin_tools = {:group_name => t('admin_tools_permissions',  "Admin Tools"), :group_permissions => []}
  
+    # Add group_permissions
     RoleOverride.manageable_permissions(context).each do |p|
       hash = {:label => p[1][:label].call, :permission_name => p[0]}
       if p[1][:account_only]
         if p[1][:account_only] == :site_admin
           site_admin[:group_permissions] << hash
+        elsif p[1][:admin_tool]
+          admin_tools[:group_permissions] << hash
         else
           account[:group_permissions] << hash
         end
       else
         course[:group_permissions] << hash
-      end
+      end 
     end
  
     res = []
     res << site_admin if site_admin[:group_permissions].any?
     res << account if account[:group_permissions].any?
+    res << admin_tools if admin_tools[:group_permissions].any?
     res << course if course[:group_permissions].any?
  
     res.each{|pg| pg[:group_permissions] = pg[:group_permissions].sort_by{|p|p[:label]} }

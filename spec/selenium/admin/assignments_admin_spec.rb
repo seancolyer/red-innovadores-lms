@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/../common')
 
 describe "assignments" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   context "as an admin" do
     before do
@@ -11,7 +11,7 @@ describe "assignments" do
     end
 
     it "should not show google docs tab for masquerading admin" do
-      PluginSetting.create!(:name => 'google_docs', :settings => :tmp)
+      PluginSetting.create!(:name => 'google_docs', :settings => {})
       assignment_model(:course => @course, :submission_types => 'online_upload', :title => 'Assignment 1')
       get "/users/#{@student.id}/masquerade"
       expect_new_page_load { f('.masquerade_button').click }

@@ -1,10 +1,11 @@
 define [
   'compiled/views/QuickStartBar/BaseItemView'
+  'jquery'
   'underscore'
   'compiled/models/Announcement'
   'jst/quickStartBar/announcement'
   'jquery.instructure_date_and_time'
-], (BaseItemView, _, Announcement, template) ->
+], (BaseItemView, $, _, Announcement, template) ->
 
   class AnnouncementView extends BaseItemView
 
@@ -17,9 +18,7 @@ define [
       selector:
         baseData:
           type: 'course'
-        preparer: (postData, data, parent) ->
-          for row in data
-            row.noExpand = true
+        noExpand: true
         browser: false
 
 

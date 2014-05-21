@@ -17,11 +17,18 @@
  */
 
 define([
+  'compiled/models/PublishableModuleItem',
+  'compiled/views/PublishIconView',
   'INST' /* INST */,
   'i18n!context_modules',
   'jquery' /* $ */,
+  'compiled/views/context_modules/context_modules' /* handles the publish/unpublish state */,
+  'compiled/util/vddTooltip',
+  'jst/_vddTooltip',
+  'compiled/models/Publishable',
+  'compiled/views/PublishButtonView',
   'jquery.ajaxJSON' /* ajaxJSON */,
-  'jquery.instructure_date_and_time' /* parseFromISO, time_field, datetime_field */,
+  'jquery.instructure_date_and_time' /* dateString, datetimeString, time_field, datetime_field */,
   'jquery.instructure_forms' /* formSubmit, fillFormData, formErrors, errorBox */,
   'jqueryui/dialog',
   'compiled/jquery/fixDialogButtons' /* fix dialog formatting */,
@@ -33,7 +40,7 @@ define([
   'vendor/date' /* Date.parse */,
   'vendor/jquery.scrollTo' /* /\.scrollTo/ */,
   'jqueryui/sortable' /* /\.sortable/ */
-], function(INST, I18n, $) {
+], function(PublishableModuleItem, PublishIconView, INST, I18n, $, ContextModulesView, vddTooltip, vddTooltipView, Publishable, PublishButtonView) {
 
   // TODO: AMD don't export global, use as module
   window.modules = (function() {
@@ -53,7 +60,54 @@ define([
         }
         return indent;
       },
+
+      updateModulePositions: function() {
+        var ids = []
+        $("#context_modules .context_module").each(function() {
+          ids.push($(this).attr('id').substring('context_module_'.length));
+        });
+        var url = $(".reorder_modules_url").attr('href');
+        $("#context_modules").loadingImage();
+        $.ajaxJSON(url, 'POST', {order: ids.join(",")}, function(data) {
+          $("#context_modules").loadingImage('remove');
+          for(var idx in data) {
+            var module = data[idx];
+            $("#context_module_" + module.context_module.id).triggerHandler('update', module);
+          }
+        }, function(data) {
+          $("#context_modules").loadingImage('remove');
+        });
+      },
+
+      updateModuleItemPositions: function(event, ui) {
+        var $module = ui.item.parents(".context_module");
+        var url = $module.find(".reorder_items_url").attr('href');
+        var items = [];
+        $module.find(".context_module_items .context_module_item").each(function() {
+          items.push($(this).getTemplateData({textValues: ['id']}).id);
+        });
+        $module.find(".context_module_items.ui-sortable").sortable('disable');
+        $module.disableWhileLoading(
+          $.ajaxJSON(url, 'POST', {order: items.join(",")}, function(data) {
+            if(data && data.context_module && data.context_module.content_tags) {
+              for(var idx in data.context_module.content_tags) {
+                var tag = data.context_module.content_tags[idx].content_tag;
+                $module.find("#context_module_item_" + tag.id).fillTemplateData({
+                  data: {position: tag.position}
+                });
+              }
+            }
+            $module.find(".context_module_items.ui-sortable").sortable('enable');
+          }, function(data) {
+            $module.find(".content").loadingImage('remove');
+            $module.find(".content").errorBox(I18n.t('errors.reorder', 'Reorder failed, please try again.'));
+          })
+        );
+      },
+
       refreshProgressions: function(show_links) {
+        if (ENV.NO_MODULE_PROGRESSIONS) return;
+
         $("#context_modules .context_module:visible").each(function() {
           var $module = $(this);
           var id = $module.find(".header").getTemplateData({textValues: ['id']});
@@ -167,17 +221,20 @@ define([
       updateAssignmentData: function() {
         $.ajaxJSON($(".assignment_info_url").attr('href'), 'GET', {}, function(data) {
           $.each(data, function(id, info) {
+            $context_module_item = $("#context_module_item_" + id);
             var data = {};
             if (info["points_possible"] != null) {
-              data["points_possible_display"] = I18n.t('points_possible_short', '%{points} pts', { 'points': "<span class='points_possible_block'>" + info["points_possible"] + "</span>" });
+              data["points_possible_display"] = I18n.t('points_possible_short', '%{points} pts', { 'points': "" + info["points_possible"]});
             }
             if (info["due_date"] != null) {
-              data["due_date_display"] = $.parseFromISO(info["due_date"]).date_formatted
-            } else if (info["due_dates"] != null) {
-              data["due_date_display"] = I18n.t('multiple_due_dates', 'Multiple Due Dates');
+              data["due_date_display"] = $.dateString(info["due_date"])
+            } else if (info["vdd_tooltip"] != null) {
+              info['vdd_tooltip']['link_href'] = $context_module_item.find('a.title').attr('href');
+              $context_module_item.find('.due_date_display').html(vddTooltipView(info["vdd_tooltip"]));
             }
-            $("#context_module_item_" + id).fillTemplateData({data: data, htmlValues: ['points_possible_display']})
+            $context_module_item.fillTemplateData({data: data, htmlValues: ['points_possible_display']})
           });
+          vddTooltip();
         }, function() {
         });
       },
@@ -192,7 +249,7 @@ define([
       editModule: function($module) {
         var $form = $("#add_context_module_form");
         $form.data('current_module', $module);
-        var data = $module.getTemplateData({textValues: ['name', 'unlock_at', 'require_sequential_progress']});
+        var data = $module.getTemplateData({textValues: ['name', 'unlock_at', 'require_sequential_progress', 'publish_final_grade']});
         $form.fillFormData(data, {object_name: 'context_module'});
         var isNew = false;
         if($module.attr('id') == 'context_module_new') {
@@ -209,6 +266,7 @@ define([
         }
         $form.find("#unlock_module_at").prop('checked', data.unlock_at);
         $form.find("#require_sequential_progress").attr('checked', data.require_sequential_progress == "true" || data.require_sequential_progress == "1");
+        $form.find("#publish_final_grade").attr('checked', data.publish_final_grade == "true" || data.publish_final_grade == "1");
         $form.find(".prerequisites_entry").showIf($("#context_modules .context_module").length > 1);
         var prerequisites = [];
         $module.find(".prerequisites .criterion").each(function() {
@@ -266,17 +324,25 @@ define([
         if(!data) { return $("<div/>"); }
         data.id = data.id || 'new'
         data.type = data.type || data['item[type]'] || $.underscore(data.content_type);
+        if (data.type === 'quiz' || data.type === 'Quizzes::quiz') {
+          data.type = 'quizzes/quiz'
+        }
         data.title = data.title || data['item[title]'];
         data.new_tab = data.new_tab ? '1' : '0';
         var $item, $olditem = (data.id != 'new') ? $("#context_module_item_" + data.id) : [];
         if($olditem.length) {
-          $item = $olditem.clone(true).removeAttr('id');
-          $olditem.remove();
+          var admin = $olditem.find('.ig-admin');
+          if (admin.length) { admin.detach(); }
+          $item = $olditem.clone(true);
+          if (admin.length) {
+            $item.find('.ig-row').append(admin)
+          };
         } else {
           $item = $("#context_module_item_blank").clone(true).removeAttr('id');
         }
         $item.addClass(data.type + "_" + data.id);
         $item.addClass(data.type);
+        $item.attr('aria-label', data.title);
         $item.fillTemplateData({
           data: data,
           id: 'context_module_item_' + data.id,
@@ -297,10 +363,14 @@ define([
             }
           }
         });
-        if(!$before) {      
-          $module.find(".context_module_items").append($item.show());
+        if($olditem.length) {
+          $olditem.replaceWith($item.show());
         } else {
-          $before.before($item.show());
+          if(!$before) {
+            $module.find(".context_module_items").append($item.show());
+          } else {
+            $before.before($item.show());
+          }
         }
         return $item;
       },
@@ -403,76 +473,54 @@ define([
         placeholder: 'context_module_placeholder',
         forcePlaceholderSize: true,
         axis: 'y',
-        containment: "#context_modules",
-        update: function(event, ui) {
-          var $module = ui.item.parents(".context_module");
-          var url = $module.find(".reorder_items_url").attr('href');
-          $module.find(".content").loadingImage();
-          var items = [];
-          $module.find(".context_module_items .context_module_item").each(function() {
-            items.push($(this).getTemplateData({textValues: ['id']}).id);
-          });
-          $.ajaxJSON(url, 'POST', {order: items.join(",")}, function(data) {
-            $module.find(".content").loadingImage('remove');
-            if(data && data.context_module && data.context_module.content_tags) {
-              for(var idx in data.context_module.content_tags) {
-                var tag = data.context_module.content_tags[idx].content_tag;
-                $module.find("#context_module_item_" + tag.id).fillTemplateData({
-                  data: {position: tag.position}
-                });
-              }
-            }
-          }, function(data) {
-            $module.find(".content").loadingImage('remove');
-            $module.find(".content").errorBox(I18n.t('errors.reorder', 'Reorder failed, please try again.'));
-          });
-        }
+        containment: "#context_modules"
       }
     };
   })();
   
 
   modules.initModuleManagement = function() {
+    // Create the context modules backbone view to manage the publish button. 
+    var context_modules_view = new ContextModulesView({
+      el: $("#content"),
+      modules: modules
+    });
 
     $("#unlock_module_at").change(function() {
       $this = $(this);
       $unlock_module_at_details = $(".unlock_module_at_details");
-
       $unlock_module_at_details.showIf($this.attr('checked'))
-
-      //if($this.attr('checked')){
-        //$unlock_module_at_details.show();// removeClass("accessible_hide");
-      //}else{
-        //$unlock_module_at_details.hide(); //addClass("accessible_hide");
-      //}
-
-      //$(".unlock_module_at_details").showIf($(this).attr('checked'));
-      //$('.unlock_module_at_details').attr('aria-hidden', false);
 
       if (!$this.attr('checked')) {
         $("#context_module_unlock_at").val('').triggerHandler('change');
       }
     }).triggerHandler('change');
 
+    // -------- BINDING THE UPDATE EVENT -----------------
     $(".context_module").bind('update', function(event, data) {
-      data.context_module.unlock_at = $.parseFromISO(data.context_module.unlock_at).datetime_formatted;
+      data.context_module.unlock_at = $.datetimeString(data.context_module.unlock_at);
       var $module = $("#context_module_" + data.context_module.id);
+      $module.attr('aria-label', data.context_module.name);
       $module.find(".header").fillTemplateData({
         data: data.context_module,
         hrefValues: ['id']
       });
+
       $module.find(".footer").fillTemplateData({
         data: data.context_module,
         hrefValues: ['id']
       });
+
       $module.find(".unlock_details").showIf(data.context_module.unlock_at && Date.parse(data.context_module.unlock_at) > new Date());
       $module.find(".footer .prerequisites").empty();
+
       for(var idx in data.context_module.prerequisites) {
         var pre = data.context_module.prerequisites[idx];
         var $pre = $("#display_criterion_blank").clone(true).removeAttr('id');
         $pre.fillTemplateData({data: pre});
         $module.find(".footer .prerequisites").append($pre.show());
       }
+
       $module.find(".context_module_items .context_module_item")
         .removeClass('progression_requirement')
         .removeClass('min_score_requirement')
@@ -481,18 +529,24 @@ define([
         .removeClass('must_submit_requirement')
         .removeClass('must_contribute_requirement')
         .find('.criterion').removeClass('defined');
+
+      // Hack. Removing the class here only to re-add it a few lines later if needed.
+      $module.find('.ig-row').removeClass('with-completion-requirements');
       for(var idx in data.context_module.completion_requirements) {
         var req = data.context_module.completion_requirements[idx];
         req.criterion_type = req.type;
         var $item = $module.find("#context_module_item_" + req.id);
+        $item.find('.ig-row').addClass('with-completion-requirements');
         $item.find(".criterion").fillTemplateData({data: req});
         $item.find(".completion_requirement").fillTemplateData({data: req});
         $item.find(".criterion").addClass('defined');
         $item.addClass(req.type + "_requirement").addClass('progression_requirement');
       }
-      $module.find(".footer.prerequisites_footer").showIf(data.context_module.prerequisites && data.context_module.prerequisites.length > 0);
+
+      $module.find(".prerequisites_footer").showIf(data.context_module.prerequisites && data.context_module.prerequisites.length > 0);
       modules.refreshModuleList();
     });
+
     $("#add_context_module_form").formSubmit({
       object_name: 'context_module',
       processData: function(data) {
@@ -526,13 +580,41 @@ define([
       success: function(data, $module) {
         $module.loadingImage('remove');
         $module.attr('id', 'context_module_' + data.context_module.id);
+
+        // Set this module up with correct data attributes
+        $module.data('module-url', "/courses/" + data.context_module.context_id + "/modules/" + data.context_module.id);
+        $module.data('workflow-state', data.context_module.workflow_state);
+        if(data.context_module.workflow_state == "unpublished"){
+          $module.find('.workflow-state-action').text("Publish");
+          $module.find('.workflow-state-icon').addClass('publish-module-link')
+                                              .removeClass('unpublish-module-link');
+          $module.addClass('unpublished_module');
+        }
+
         $("#no_context_modules_message").slideUp();
+        var $publishIcon = $module.find('.publish-icon');
+        // new module, setup publish icon and other stuff
+        if (ENV.ENABLE_DRAFT && !$publishIcon.data('id')) {
+          var collapse = $module.find('h2.collapse_module_link');
+          var expand = $module.find('h2.collapse_module_link');
+          var href = collapse.attr('href');
+          $(collapse, expand).attr('href', href.replace('{{ id }}', data.context_module.id));
+          var publishData = {
+            moduleType: 'module',
+            id: data.context_module.id,
+            courseId: data.context_module.context_id,
+            published: data.context_module.workflow_state == 'published',
+            publishable: true
+          };
+          initPublishButton($publishIcon, publishData);
+        }
         $module.triggerHandler('update', data);
       },
       error: function(data, $module) {
         $module.loadingImage('remove');
       }
     });
+
     $("#add_context_module_form .add_prerequisite_link").click(function(event) {
       event.preventDefault();
       var $form = $(this).parents("#add_context_module_form");
@@ -541,20 +623,24 @@ define([
       var $pre = $form.find("#criterion_blank").clone(true).removeAttr('id');
       $select.find("." + $module.attr('id')).remove();
       var afters = [];
+
       $("#context_modules .context_module").each(function() {
         if($(this)[0] == $module[0] || afters.length > 0) {
           afters.push($(this).getTemplateData({textValues: ['id']}).id);
         }
       });
+
       for(var idx in afters) {
         $select.find(".context_module_" + afters[idx]).attr('disabled', true);
       }
+
       $pre.find(".option").empty().append($select.show());
       $form.find(".prerequisites_list .criteria_list").append($pre).show();
       $pre.slideDown();
       $form.find(".no_prerequisites_message").hide();
       $select.focus();
     });
+
     $("#add_context_module_form .add_completion_criterion_link").click(function(event) {
       event.preventDefault();
       var $form = $(this).parents("#add_context_module_form");
@@ -571,7 +657,7 @@ define([
           displayType = I18n.t('optgroup.assignments', "Assignments");
         } else if (data.type == 'attachment') {
           displayType = I18n.t('optgroup.files', "Files");
-        } else if (data.type == 'quiz') {
+        } else if (data.type == 'quizzes/quiz') {
           displayType = I18n.t('optgroup.quizzes', "Quizzes");
         } else if (data.type == 'external_url') {
           displayType = I18n.t('optgroup.external_urls', "External URLs");
@@ -613,9 +699,7 @@ define([
       var $option = $(this).parents(".completion_criterion_option");
       $option.find(".min_score_box").showIf($(this).val() == 'min_score');
       var id = $option.find(".id").val();
-      var points_possible = $.trim($("#context_module_item_" + id + " .points_possible").text()) ||
-          // for some reason the previous did not have anything in it sometimes (noticed when you are dealing with a newly added module)
-          $.trim($("#context_module_item_" + id + " .points_possible_block").text());
+      var points_possible = $.trim($("#context_module_item_" + id + " .points_possible_display").text().split(' ')[0]);
       if(points_possible.length > 0) {
         $option.find(".points_possible").text(points_possible);
         $option.find(".points_possible_parent").show();
@@ -690,7 +774,7 @@ define([
         var $module = $("#context_module_" + data.content_tag.context_module_id);
         var $item = modules.addItemToModule($module, data.content_tag);
         $module.find(".context_module_items.ui-sortable").sortable('refresh');
-        if (data.content_tag.content_id != 0) {
+        if (data.content_tag.content_id != 0 && data.content_tag.content_type != 'ContextExternalTool') {
           modules.updateAllItemInstances(data.content_tag);
         }
         modules.updateAssignmentData();
@@ -714,22 +798,27 @@ define([
         }
       });
     });
+
     $(".edit_module_link").live('click', function(event) {
       event.preventDefault();
       modules.editModule($(this).parents(".context_module"));
     });
+
     $(".add_module_link").live('click', function(event) {
       event.preventDefault();
       var $module = $("#context_module_blank").clone(true).attr('id', 'context_module_new');
       $("#context_modules").append($module);
-        $module.find(".context_module_items").sortable(modules.sortable_module_options);
-        $("#context_modules.ui-sortable").sortable('refresh');
-        $("#context_modules .context_module .context_module_items.ui-sortable").each(function() {
-          $(this).sortable('refresh');
-          $(this).sortable('option', 'connectWith', '.context_module_items');
-        });
+      var opts = modules.sortable_module_options;
+      opts['update'] = modules.updateModuleItemPositions;
+      $module.find(".context_module_items").sortable(opts);
+      $("#context_modules.ui-sortable").sortable('refresh');
+      $("#context_modules .context_module .context_module_items.ui-sortable").each(function() {
+        $(this).sortable('refresh');
+        $(this).sortable('option', 'connectWith', '.context_module_items');
+      });
       modules.editModule($module);
     });
+
     $(".add_module_item_link").live('click', function(event) {
       event.preventDefault();
       var $module = $(this).closest(".context_module");
@@ -744,21 +833,24 @@ define([
         var options = {for_modules: true};
         options.select_button_text = I18n.t('buttons.add_item', "Add Item");
         options.holder_name = module.name;
+        options.height = 550;
+        options.width = 770;
         options.dialog_title = I18n.t('titles.add_item', "Add Item to %{module}", {'module': module.name});
         options.submit = function(item_data) {
           var $module = $("#context_module_" + module.id);
           var $item = modules.addItemToModule($module, item_data);
-          $module.find(".context_module_items.ui-sortable").sortable('refresh');
+          $module.find(".context_module_items.ui-sortable").sortable('refresh').sortable('disable');
           var url = $module.find(".add_module_item_link").attr('rel');
-          $item.loadingImage({image_size: 'small'});
-          $.ajaxJSON(url, 'POST', item_data, function(data) {
-            $item.loadingImage('remove');
-            $item.remove();
-            data.content_tag.type = item_data['item[type]'];
-            modules.addItemToModule($module, data.content_tag);
-            $module.find(".context_module_items.ui-sortable").sortable('refresh');
-            modules.updateAssignmentData();
-          });
+          $module.disableWhileLoading(
+            $.ajaxJSON(url, 'POST', item_data, function(data) {
+              $item.remove();
+              data.content_tag.type = item_data['item[type]'];
+              $item = modules.addItemToModule($module, data.content_tag);
+              $module.find(".context_module_items.ui-sortable").sortable('enable').sortable('refresh');
+              if (ENV.ENABLE_DRAFT) { initNewItemPublishButton($item, data.content_tag); }
+              modules.updateAssignmentData();
+            })
+          );
         };
         INST.selectContentDialog(options);
       }
@@ -770,6 +862,7 @@ define([
       event.preventDefault();
       var $criterion = $(this).parents(".criterion");
       var prereqs = []
+
       $(this).parents(".context_module .prerequisites .criterion").each(function() {
         if($(this)[0] != $criterion[0]) {
           var data = $(this).getTemplateData({textValues: ['id', 'type']});
@@ -777,9 +870,12 @@ define([
           prereqs.push(type + "_" + data.id);
         }
       });
+
       var url = $(this).parents(".context_module").find(".edit_module_link").attr('href');
       var data = {'context_module[prerequisites]': prereqs.join(",")}
+
       $criterion.dim();
+
       $.ajaxJSON(url, 'PUT', data, function(data) {
         $("#context_module_" + data.context_module.id).triggerHandler('update', data);
       });
@@ -840,7 +936,9 @@ define([
       var next = function() {
         if($items.length > 0) {
           var $item = $items.shift();
-          $item.sortable(modules.sortable_module_options);
+          var opts = modules.sortable_module_options;
+          opts['update'] = modules.updateModuleItemPositions;
+          $item.sortable(opts);
           setTimeout(next, 10);
         }
       };
@@ -850,30 +948,149 @@ define([
         helper: 'clone',
         containment: '#context_modules_sortable_container',
         axis: 'y',
-        update: function(event, ui) {
-          var ids = []
-          $("#context_modules .context_module").each(function() {
-            ids.push($(this).attr('id').substring('context_module_'.length));
-          });
-          var url = $(".reorder_modules_url").attr('href');
-          $("#context_modules").loadingImage();
-          $.ajaxJSON(url, 'POST', {order: ids.join(",")}, function(data) {
-            $("#context_modules").loadingImage('remove');
-            for(var idx in data) {
-              var module = data[idx];
-              $("#context_module_" + module.context_module.id).triggerHandler('update', module);
-            }
-          }, function(data) {
-            $("#context_modules").loadingImage('remove');
-          });
-        }
+        update: modules.updateModulePositions
       });
       modules.refreshModuleList();
       modules.refreshed = true;
     }, 1000);
   }
 
+  function initNewItemPublishButton($item, data) {
+    var publishData = {
+      moduleType: data.type,
+      id: data.publishable_id,
+      moduleId: data.context_module_id,
+      courseId: data.context_id,
+      published: data.published,
+      publishable: data.publishable,
+      unpublishable: data.unpublishable
+    };
+    initPublishButton($item.find('.publish-icon'), publishData);
+  }
+
+  function initPublishButton($el, data) {
+    data = data || $el.data();
+    var model = new PublishableModuleItem({
+      module_type: data.moduleType,
+      content_id: data.contentId,
+      id: data.id,
+      module_id: data.moduleId,
+      module_item_id: data.moduleItemId,
+      course_id: data.courseId,
+      published: data.published,
+      publishable: data.publishable,
+      unpublishable: data.unpublishable
+    });
+    var view = new PublishIconView({model: model, el: $el[0]});
+    var row = $el.closest('.ig-row');
+    if (data.published) { row.addClass('ig-published'); }
+    // TODO: need to go find this item in other modules and update their state
+    model.on('change:published', function() {
+      view.$el.closest('.ig-row').toggleClass('ig-published', model.get('published'));
+      view.render();
+    });
+    view.render();
+    return view;
+  }
+
+  var content_type_map = {
+    'page': 'wiki_page',
+    'discussion': 'discussion_topic',
+    'external_tool': 'context_external_tool',
+    'sub_header': 'context_module_sub_header'
+  };
+  function itemContentKey(model) {
+    if (model === null)
+      return null;
+
+    var attrs = model.attributes || model,
+        content_type = $.underscore(attrs['module_type'] || attrs['type']),
+        content_id = attrs['content_id'] || attrs['id'];
+
+    content_type = content_type_map[content_type] || content_type;
+
+    if (!content_type || content_type === 'module') {
+      return null;
+    } else {
+      if (content_type == 'wiki_page') {
+        content_type = 'wiki_page';
+        content_id = attrs['page_url'] || attrs['id'];
+      } else if (content_type === 'context_module_sub_header' || content_type === 'external_url' || content_type == 'context_external_tool') {
+        content_id = attrs['id'];
+      }
+
+      return content_type + '_' + content_id;
+    }
+  }
+
+  var moduleItems = {};
+  var updateModuleItem = function(attrs, model) {
+    var i, items, item, parsedAttrs;
+    items = moduleItems[itemContentKey(attrs) || itemContentKey(model)];
+    if (items) {
+      for (i = 0; i < items.length; i++) {
+        item = items[i];
+        parsedAttrs = item.model.parse(attrs);
+        item.model.set({published: parsedAttrs.published});
+      }
+    }
+  };
+
+  var overrideModuleModel = function(model) {
+    var publish = model.publish, unpublish = model.unpublish;
+    model.publish = function() {
+      return publish.apply(model, arguments).done(function() {
+        model
+          .fetch({data: {include: 'items'}})
+          .done(function(attrs) {
+            for (var i = 0; i < attrs.items.length; i++)
+              updateModuleItem(attrs.items[i], model);
+          });
+      });
+    };
+    model.unpublish = function() {
+      return unpublish.apply(model, arguments).done(function() {
+        model
+          .fetch({data: {include: 'items'}})
+          .done(function(attrs) {
+            for (var i = 0; i < attrs.items.length; i++)
+              updateModuleItem(attrs.items[i], model);
+          });
+      });
+    };
+  };
+  var overrideItemModel = function(model) {
+    var publish = model.publish, unpublish = model.unpublish;
+    model.publish = function() {
+      return publish.apply(model, arguments).done(function(attrs) {
+        updateModuleItem($.extend({published:true}, attrs), model);
+      });
+    };
+    model.unpublish = function() {
+      return unpublish.apply(model, arguments).done(function(attrs) {
+        updateModuleItem($.extend({published:false}, attrs), model);
+      });
+    };
+  };
+  var overrideModel = function(model, view) {
+    var contentKey = itemContentKey(model);
+    if (contentKey === null)
+      overrideModuleModel(model);
+    else
+      overrideItemModel(model);
+
+    moduleItems[contentKey] || (moduleItems[contentKey] = []);
+    moduleItems[contentKey].push({model: model, view: view});
+  };
+
   $(document).ready(function() {
+    if (ENV.ENABLE_DRAFT) {
+      $('.publish-icon:visible').each(function(index, el) {
+        var view = initPublishButton($(el));
+        overrideModel(view.model, view);
+      });
+    }
+
     $(".datetime_field").datetime_field();
 
     $(".context_module").live('mouseover', function() {
@@ -980,8 +1197,8 @@ define([
       var reload_entries = $module.find(".content .context_module_items").children().length === 0;
       var toggle = function(show) {
         var callback = function() {
-          $module.find(".collapse_module_link").showIf($module.find(".content:visible").length > 0);
-          $module.find(".expand_module_link").showIf($module.find(".content:visible").length === 0);
+          $module.find(".collapse_module_link").css('display', $module.find(".content:visible").length > 0 ? 'inline-block' : 'none');
+          $module.find(".expand_module_link").css('display', $module.find(".content:visible").length === 0 ? 'inline-block' : 'none');
           if($module.find(".content:visible").length > 0) {
             $module.find(".footer .manage_module").css('display', '');
             $module.toggleClass('collapsed_module', false);
@@ -1183,9 +1400,13 @@ define([
       });
     });
     $(document).fragmentChange(function(event, hash) {
-      var module = $(hash.replace(/module/, "context_module"));
-      if (module.hasClass('collapsed_module')) {
-        module.find(".expand_module_link").triggerHandler('click');
+      if (hash == '#student_progressions') {
+        $(".module_progressions_link").trigger('click');
+      } else {
+        var module = $(hash.replace(/module/, "context_module"));
+        if (module.hasClass('collapsed_module')) {
+          module.find(".expand_module_link").triggerHandler('click');
+        }
       }
     });
 
@@ -1216,6 +1437,14 @@ define([
         $module.find(".expand_module_link:first").triggerHandler('click', true);
       }
     });
+
+    $('.module-publish-link').each(function(i, element){
+      var $el = $(element);
+      var model = new Publishable({ published: $el.hasClass('published'), id: $el.attr('data-id') }, { url: $el.attr('data-url'), root: 'module' });
+      var view = new PublishButtonView({model: model, el: $el});
+      view.render();
+    });
+
   });
 
   return modules;

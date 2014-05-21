@@ -17,7 +17,6 @@
 #
 
 require "set"
-require "skip_callback"
 
 module SIS
   class EnrollmentImporter < BaseImporter
@@ -25,7 +24,7 @@ module SIS
     def process(messages, updates_every)
       start = Time.now
       i = Work.new(@batch_id, @root_account, @logger, updates_every, messages)
-      Enrollment.skip_callback(:belongs_to_touch_after_save_or_destroy_for_course) do
+      Enrollment.suspend_callbacks(:belongs_to_touch_after_save_or_destroy_for_course, :update_cached_due_dates) do
         User.skip_updating_account_associations do
           Enrollment.process_as_sis(@sis_options) do
             yield i
@@ -36,15 +35,26 @@ module SIS
         end
       end
       @logger.debug("Raw enrollments took #{Time.now - start} seconds")
-      Enrollment.update_all({:sis_batch_id => @batch_id}, {:id => i.enrollments_to_update_sis_batch_ids}) if @batch_id && !i.enrollments_to_update_sis_batch_ids.empty?
+      i.enrollments_to_update_sis_batch_ids.in_groups_of(1000, false) do |batch|
+        Enrollment.where(:id => batch).update_all(:sis_batch_id => @batch_id)
+      end if @batch_id
       # We batch these up at the end because we don't want to keep touching the same course over and over,
       # and to avoid hitting other callbacks for the course (especially broadcast_policy)
-      Course.update_all({:updated_at => Time.now.utc}, {:id => i.courses_to_touch_ids.to_a}) unless i.courses_to_touch_ids.empty?
+      i.courses_to_touch_ids.to_a.in_groups_of(1000, false) do |batch|
+        Course.where(:id => batch).update_all(:updated_at => Time.now.utc)
+      end
+      i.courses_to_recache_due_dates.to_a.in_groups_of(1000, false) do |batch|
+        batch.each do |course_id|
+          DueDateCacher.recompute_course(course_id)
+        end
+      end
       # We batch these up at the end because normally a user would get several enrollments, and there's no reason
       # to update their account associations on each one.
       i.incrementally_update_account_associations
       User.update_account_associations(i.update_account_association_user_ids.to_a, :account_chain_cache => i.account_chain_cache)
-      User.update_all({:updated_at => Time.now.utc}, {:id => i.users_to_touch_ids.to_a}) unless i.users_to_touch_ids.empty?
+      i.users_to_touch_ids.to_a.in_groups_of(1000, false) do |batch|
+        User.where(:id => batch).update_all(:updated_at => Time.now.utc)
+      end
       @logger.debug("Enrollments with batch operations took #{Time.now - start} seconds")
       return i.success_count
     end
@@ -53,7 +63,7 @@ module SIS
     class Work
       attr_accessor :enrollments_to_update_sis_batch_ids, :courses_to_touch_ids,
           :incrementally_update_account_associations_user_ids, :update_account_association_user_ids,
-          :account_chain_cache, :users_to_touch_ids, :success_count
+          :account_chain_cache, :users_to_touch_ids, :success_count, :courses_to_recache_due_dates
 
       def initialize(batch_id, root_account, logger, updates_every, messages)
         @batch_id = batch_id
@@ -66,6 +76,7 @@ module SIS
         @incrementally_update_account_associations_user_ids = Set.new
         @users_to_touch_ids = Set.new
         @courses_to_touch_ids = Set.new
+        @courses_to_recache_due_dates = Set.new
         @enrollments_to_update_sis_batch_ids = []
         @account_chain_cache = {}
         @course = @section = nil
@@ -182,7 +193,7 @@ module SIS
               next
             end
 
-            enrollment = @section.all_enrollments.find(:first, :conditions => { :user_id => user.id, :type => type, :associated_user_id => associated_enrollment.try(:user_id), :role_name => custom_role.try(:name) })
+            enrollment = @section.all_enrollments.where(:user_id => user, :type => type, :associated_user_id => associated_enrollment.try(:user_id), :role_name => custom_role.try(:name)).first
             unless enrollment
               enrollment = Enrollment.new
               enrollment.root_account = @root_account
@@ -225,8 +236,18 @@ module SIS
             end
             if enrollment.changed?
               @users_to_touch_ids.add(user.id)
+              courses_to_recache_due_dates << enrollment.course_id if enrollment.workflow_state_changed?
               enrollment.sis_batch_id = @batch_id if @batch_id
-              enrollment.save_without_broadcasting
+              begin
+                enrollment.save_without_broadcasting!
+              rescue ActiveRecord::RecordInvalid
+                msg = "An enrollment did not pass validation "
+                msg += "(" + "course: #{course_id}, section: #{section_id}, "
+                msg += "user: #{user_id}, role: #{role}, error: " + 
+                msg += enrollment.errors.full_messages.join(",") + ")"
+                @messages << msg
+                next
+              end
             elsif @batch_id
               @enrollments_to_update_sis_batch_ids << enrollment.id
             end

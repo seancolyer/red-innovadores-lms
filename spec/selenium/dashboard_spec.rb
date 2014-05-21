@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/common')
 
 describe "dashboard" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   context "as a student" do
 
@@ -11,9 +11,9 @@ describe "dashboard" do
 
     def create_announcement
       factory_with_protected_attributes(Announcement, {
-        :context => @course,
-        :title => "hey all read this k",
-        :message => "announcement"
+          :context => @course,
+          :title => "hey all read this k",
+          :message => "announcement"
       })
     end
 
@@ -107,6 +107,24 @@ describe "dashboard" do
       ff('#conversation-details tbody tr').size.should == 1
     end
 
+    it "should show account notifications on the dashboard" do
+      a1 = @course.account.announcements.create!(:message => "hey there")
+      a2 = @course.account.announcements.create!(:message => "another announcement")
+
+      get "/"
+      messages = ffj("#dashboard .global-message .message.user_content")
+      messages.size.should == 2
+      messages[0].text.should == a2.message
+      messages[1].text.should == a1.message
+    end
+
+    it "should interpolate the user's domain in global notifications" do
+      announcement = @course.account.announcements.create!(:message => "blah blah http://random-survey-startup.ly/?some_GET_parameter_by_which_to_differentiate_results={{ACCOUNT_DOMAIN}}")
+
+      get "/"
+      fj("#dashboard .global-message .message.user_content").text.should == announcement.message.gsub("{{ACCOUNT_DOMAIN}}", @course.account.domain)
+    end
+
     it "should show appointment stream items on the dashboard" do
       pending "we need to add this stuff back in"
       Notification.create(:name => 'Appointment Group Published', :category => "Appointment Availability")
@@ -117,7 +135,7 @@ describe "dashboard" do
       @other_student = @user
       @user = @me
 
-      @group = @course.group_categories.create.groups.create(:context => @course)
+      @group = group_category.groups.create(context: @course)
       @group.users << @other_student << @user
       # appointment group publish notification and signup notification
       appointment_participant_model(:course => @course, :participant => @group, :updating_user => @other_student)
@@ -174,9 +192,9 @@ describe "dashboard" do
 
       get "/"
 
-      ffj(".to-do-list li:visible").size.should == 5 + 1 # +1 is the see more link
+      keep_trying_until { ffj(".to-do-list li:visible").size.should == 5 + 1 } # +1 is the see more link
       f(".more_link").click
-      wait_for_animations
+      wait_for_ajaximations
       ffj(".to-do-list li:visible").size.should == 20
     end
 
@@ -197,47 +215,55 @@ describe "dashboard" do
       f('.to-do-list > li').should include_text(assignment.submission_action_string)
 
       #verify assignment is in drop down
-      assignment_menu = f('#assignments_menu_item')
-      driver.action.move_to(assignment_menu).perform
-      assignment_menu.should include_text("To Turn In")
-      assignment_menu.should include_text(assignment.title)
+      driver.execute_script %{$('#assignments_menu_item').addClass('hover');}
+      wait_for_ajaximations
+      f('#assignments_menu_item').should include_text("To Turn In")
+      f('#assignments_menu_item').should include_text(assignment.title)
     end
 
-    it "should display student groups in course menu" do
+    it "should display course name in course menu" do
       @course.update_attributes(:start_at => 2.days.from_now, :conclude_at => 4.days.from_now, :restrict_enrollments_to_course_dates => false)
-      Enrollment.update_all(["created_at = ?", 1.minute.ago])
+      Enrollment.update_all(:created_at => 1.minute.ago)
 
       get "/"
-
-      course_menu = f('#courses_menu_item')
-
-      driver.action.move_to(course_menu).perform
-      course_menu.should include_text('My Courses')
-      course_menu.should include_text(@course.name)
+      driver.execute_script %{$('#courses_menu_item').addClass('hover');}
+      wait_for_ajaximations
+      f('#courses_menu_item').should include_text('My Courses')
+      f('#courses_menu_item').should include_text(@course.name)
     end
 
-
-    it "should display student groups in course menu" do
+    it "should display should display student groups in course menu" do
+      pending('broken')
       group = Group.create!(:name => "group1", :context => @course)
       group.add_user(@user)
       @course.update_attributes(:start_at => 2.days.from_now, :conclude_at => 4.days.from_now, :restrict_enrollments_to_course_dates => false)
-      Enrollment.update_all(["created_at = ?", 1.minute.ago])
+      Enrollment.update_all(:created_at => 1.minute.ago)
 
       get "/"
+      driver.execute_script %{$('#courses_menu_item').addClass('hover');}
+      wait_for_ajaximations
+      f('#courses_menu_item').should include_text(group.name)
+      f('#courses_menu_item').should include_text('Current Groups')
+    end
 
-      course_menu = f('#courses_menu_item')
+    it "should go to /courses when the courses nav item is clicked" do
+      @course.update_attributes(:start_at => 2.days.from_now, :conclude_at => 4.days.from_now, :restrict_enrollments_to_course_dates => false)
+      Enrollment.update_all(:created_at => 1.minute.ago)
 
-      driver.action.move_to(course_menu).perform
-      course_menu.should include_text('Current Groups')
-      course_menu.should include_text(group.name)
+      get '/'
+
+      keep_trying_until do
+        f('#courses_menu_item a').click
+        driver.current_url.should include('courses')
+      end
     end
 
     it "should display scheduled web conference in stream" do
-      PluginSetting.create!(:name => "dim_dim", :settings => {"domain" => "dimdim.instructure.com"})
+      PluginSetting.create!(:name => "wimba", :settings => {"domain" => "wimba.instructure.com"})
 
       # NOTE: recently changed the behavior here: conferences only display on
       # the course page, and they only display when they are in progress
-      @conference = @course.web_conferences.build({:title => "my Conference", :conference_type => "DimDim", :duration => 60})
+      @conference = @course.web_conferences.build({:title => "my Conference", :conference_type => "Wimba", :duration => 60})
       @conference.user = @user
       @conference.save!
       @conference.restart
@@ -257,19 +283,19 @@ describe "dashboard" do
                                :end_at => 10.minutes.from_now
                            })
       get "/"
-      f('div.events_list .event a').should include_text(@event.title)
+      f('.events_list .event a').should include_text(@event.title)
     end
 
     it "should display quiz submissions with essay questions as submitted in coming up list" do
-      quiz_with_graded_submission([:question_data => {:id => 31, 
-                                                      :name => "Quiz Essay Question 1", 
-                                                      :question_type => 'essay_question', 
-                                                      :question_text => 'qq1', 
+      quiz_with_graded_submission([:question_data => {:id => 31,
+                                                      :name => "Quiz Essay Question 1",
+                                                      :question_type => 'essay_question',
+                                                      :question_text => 'qq1',
                                                       :points_possible => 10}],
                                   {:user => @student, :course => @course}) do
         {
-          "question_31"   => "<p>abeawebawebae</p>", 
-          "question_text" => "qq1"
+            "question_31" => "<p>abeawebawebae</p>",
+            "question_text" => "qq1"
         }
       end
 
@@ -277,6 +303,7 @@ describe "dashboard" do
       @assignment.save!
 
       get "/"
+      keep_trying_until { ffj(".events_list .event .tooltip_wrap").size.should > 0 }
       driver.execute_script("$('.events_list .event .tooltip_wrap, .events_list .event .tooltip_text').css('visibility', 'visible')")
       f('.events_list .event .tooltip_wrap').should include_text 'submitted'
     end
@@ -296,7 +323,7 @@ describe "dashboard" do
       @enrollment.workflow_state = 'active'
       @enrollment.save!
       @second_course.reload
-      Enrollment.update_all(["created_at = ?", 1.minute.ago]) # need to make created_at and updated_at different
+      Enrollment.update_all(:created_at => 1.minute.ago) # need to make created_at and updated_at different
 
       get "/"
       f('.no-recent-messages').should be_nil
@@ -314,10 +341,25 @@ describe "dashboard" do
       c1.save!
       get "/"
 
-      driver.action.move_to(f('#courses_menu_item')).perform
-      course_menu = f('#menu_enrollments')
-      course_menu.should be_displayed
-      course_menu.should_not include_text(c1.name)
+      driver.execute_script %{$('#courses_menu_item').addClass('hover');}
+      item = fj('#menu_enrollments')
+      item.should be_displayed
+      item.should_not include_text(c1.name)
+    end
+
+    it "should show recent feedback and it should work" do
+      assign = @course.assignments.create!(:title => 'hi', :due_at => 1.day.ago, :points_possible => 5)
+      assign.grade_student(@student, :grade => '4')
+
+      get "/"
+      wait_for_ajaximations
+
+      f('.recent_feedback a').attribute('href').should match /courses\/#{@course.id}\/assignments\/#{assign.id}\/submissions\/#{@student.id}/
+      f('.recent_feedback a').click
+      wait_for_ajaximations
+
+      # submission page should load
+      f('h2').text.should == "Submission Details"
     end
   end
 
@@ -353,20 +395,12 @@ describe "dashboard" do
       f('.to-do-list > li').should include_text('Grade ' + assignment.title)
 
       #verify assignment is in drop down
-      assignment_menu = f('#assignments_menu_item')
-      driver.action.move_to(assignment_menu).perform
-      assignment_menu.should include_text("To Grade")
-      assignment_menu.should include_text(assignment.title)
-    end
+      driver.execute_script %{$('#assignments_menu_item').addClass('hover');}
 
-    it "should display appointment groups in todo list" do
-      ag = AppointmentGroup.create! :title => "appointment group",
-                                    :contexts => [@course],
-                                    :new_appointments => [[Time.now.utc + 2.hour, Time.now.utc + 3.hour]]
-      student_in_course(:course => @course, :active_all => true)
-      ag.appointments.first.reserve_for(@student, @student)
-      get "/"
-      f('#right-side .events_list').text.should include 'appointment group'
+      wait_for_ajaximations
+
+      f('#assignments_menu_item').should include_text("To Grade")
+      f('#assignments_menu_item').should include_text(assignment.title)
     end
 
     it "should show submitted essay quizzes in the todo list" do
@@ -396,23 +430,25 @@ describe "dashboard" do
 
         get "/"
 
-        course_menu = f('#courses_menu_item')
-        driver.action.move_to(course_menu).perform
-        course_menu.should include_text('My Courses')
-        course_menu.should include_text('Customize')
-        course_menu.should include_text('View all courses')
+        driver.execute_script %{$('#courses_menu_item').addClass('hover');}
+        wait_for_ajaximations
+
+        fj('#courses_menu_item').should include_text('My Courses')
+        fj('#courses_menu_item').should include_text('Customize')
+        fj('#courses_menu_item').should include_text('View all courses')
       end
+
 
       it "should allow customization if there are sufficient course invitations" do
         20.times { course_with_teacher({:user => user_with_communication_channel(:user_state => :creation_pending), :active_course => true}) }
-
         get "/"
 
-        course_menu = f('#courses_menu_item')
-        driver.action.move_to(course_menu).perform
-        course_menu.should include_text('My Courses')
-        course_menu.should include_text('Customize')
-        course_menu.should include_text('View all courses')
+        driver.execute_script %{$('#courses_menu_item').addClass('hover');}
+        wait_for_ajaximations
+
+        fj('#courses_menu_item').should include_text('My Courses')
+        fj('#courses_menu_item').should include_text('Customize')
+        fj('#courses_menu_item').should include_text('View all courses')
       end
 
       it "should allow customization if all courses are already favorited" do
@@ -423,11 +459,11 @@ describe "dashboard" do
         }
 
         get "/"
+        driver.execute_script %{$('#courses_menu_item').addClass('hover');}
+        wait_for_ajaximations
 
-        course_menu = f('#courses_menu_item')
-        driver.action.move_to(course_menu).perform
-        course_menu.should include_text('My Courses')
-        course_menu.should include_text('Customize')
+        fj('#courses_menu_item').should include_text('My Courses')
+        fj('#courses_menu_item').should include_text('Customize')
       end
 
       it "should allow customization even before the course ajax request comes back" do
@@ -449,13 +485,51 @@ describe "dashboard" do
         driver.execute_script("$('#menu .customListOpen:first').click()")
         wait_for_ajaximations
 
-        UsersController.filter_chain.pop
+        if CANVAS_RAILS2
+          UsersController.filter_chain.pop
+        else
+          UsersController._process_action_callbacks.pop
+        end
 
         course_menu.should include_text('My Courses')
         course_menu.should include_text('View all courses')
         course_menu.find_element(:css, '.customListWrapper').should be_displayed
       end
+
+      it "should perform customization actions" do
+        def favoriteElsSize
+          ff('#menu_enrollments > .menu-item-drop-column-list li.customListItem').size
+        end
+
+        def checkedEls
+          ffj('#menu_enrollments .customListContent li.customListItem.on')
+        end
+
+        @courses = []
+        20.times { @courses << course_with_teacher({:user => @user, :active_course => true, :active_enrollment => true}).course }
+
+        @user.favorites.by('Course').destroy_all
+        @courses[0...10].each do |course|
+          @user.favorites.build(:context => course)
+        end
+        @user.save
+
+        get "/"
+        driver.execute_script(%{$("#menu li.menu-item:first").trigger('mouseenter')})
+        sleep 0.4 # there's a fixed 300ms delay before the menu will display
+        wait_for_ajaximations
+        favoriteElsSize.should == 10
+        driver.execute_script("$('#menu .customListOpen:first').click()")
+        wait_for_ajaximations
+
+        checkedEls.size.should == 10
+        checkedEls[0].click
+        wait_for_ajaximations
+        checkedEls.size.should == 9
+        favoriteElsSize.should == 9
+        @user.reload
+        @user.favorites.size.should == 9
+      end
     end
   end
 end
-

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2012 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -22,15 +22,16 @@ module Api::V1::Section
   def section_json(section, user, session, includes)
     res = section.as_json(:include_root => false,
                           :only => %w(id name course_id nonxlist_course_id start_at end_at))
-    res['sis_section_id'] = section.sis_source_id
+    res['sis_section_id'] = section.sis_source_id if section.root_account.grants_rights?(user, :read_sis, :manage_sis).values.any?
+    res['sis_import_id'] = section.sis_batch_id if section.root_account.grants_right?(user, session, :manage_sis)
     if includes.include?('students')
       proxy = section.enrollments
       if user_json_is_admin?
-        proxy = proxy.scoped(:include => { :user => :pseudonyms })
+        proxy = proxy.includes(:user => :pseudonyms)
       else
-        proxy = proxy.scoped(:include => :user)
+        proxy = proxy.includes(:user)
       end
-      res['students'] = proxy.all(:conditions => "type = 'StudentEnrollment'").
+      res['students'] = proxy.where(:type => 'StudentEnrollment').
         map { |e| user_json(e.user, user, session, includes) }
     end
     res

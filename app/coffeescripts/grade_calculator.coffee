@@ -16,6 +16,10 @@ define [
     #
     # each group needs fields: id, rules, group_weight, assignments
     #   rules is { drop_lowest: n, drop_highest: n, never_drop: [id...] }
+    #   assignments is [
+    #    { id, points_possible, submission_types},
+    #    ...
+    #   ]
     #
     # if weighting_scheme is "percent", group weights are used, otherwise no
     # weighting is applied
@@ -106,7 +110,7 @@ define [
 
       if neverDropIds.length > 0
         [cantDrop, submissions] = partition(submissions, (s) ->
-          _.indexOf(neverDropIds, parseInt s.submission.assignment_id) >= 0)
+          _.indexOf(neverDropIds, s.submission.assignment_id) >= 0)
       else
         cantDrop = []
 
@@ -176,6 +180,9 @@ define [
           else
             qLow = qMid
           qMid = (qLow + qHigh) / 2
+
+          break if qMid == qHigh || qMid == qLow
+
           [x, kept] = bigF(qMid, submissions)
 
         kept

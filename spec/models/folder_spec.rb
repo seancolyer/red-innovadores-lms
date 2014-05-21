@@ -16,7 +16,7 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require File.expand_path(File.dirname(__FILE__) + '/../spec_helper.rb')
+require File.expand_path(File.dirname(__FILE__) + '/../sharding_spec_helper.rb')
 
 describe Folder do
   before(:each) do
@@ -58,7 +58,7 @@ describe Folder do
     f3 = f2.sub_folders.create!(:name => "f3", :context => @course)
     f1.parent_folder = f3
     f1.save.should == false
-    f1.errors.on(:parent_folder_id).should be_present
+    f1.errors.detect { |e| e.first.to_s == 'parent_folder_id' }.should be_present
   end
 
   it "files without an explicit folder_id should be inferred" do
@@ -120,5 +120,21 @@ describe Folder do
 
     @course.reload
     @course.folders.count.should == 1
+  end
+
+  describe ".assert_path" do
+    specs_require_sharding
+
+    it "should not get confused by the same context on multiple shards" do
+      user1 = User.create!
+      f1 = Folder.assert_path('myfolder', user1)
+      @shard1.activate do
+        user2 = User.new
+        user2.id = user1.local_id
+        user2.save!
+        f2 = Folder.assert_path('myfolder', user2)
+        f2.should_not == f1
+      end
+    end
   end
 end

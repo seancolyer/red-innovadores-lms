@@ -3,11 +3,11 @@ define [
   'compiled/calendar/commonEventFactory'
   'jst/calendar/editAssignment'
   'jst/calendar/editAssignmentOverride'
-  'jst/calendar/genericSelect'
+  'jst/calendar/genericSelectOptions'
   'jquery.instructure_date_and_time'
   'jquery.instructure_forms'
   'jquery.instructure_misc_helpers'
-], ($, commonEventFactory, editAssignmentTemplate, editAssignmentOverrideTemplate, genericSelectTemplate) ->
+], ($, commonEventFactory, editAssignmentTemplate, editAssignmentOverrideTemplate, genericSelectOptionsTemplate) ->
 
   class EditAssignmentDetails
     constructor: (selector, @event, @contextChangeCB, @closeCB) ->
@@ -70,11 +70,9 @@ define [
         @contextChangeCB(context)
 
       # TODO: support adding a new assignment group from this select box
-      assignmentGroupsSelectInfo =
-        cssClass: 'assignment_group'
-        name: 'assignment[assignment_group_id]'
+      assignmentGroupsSelectOptionsInfo =
         collection: @currentContextInfo.assignment_groups
-      @form.find(".assignment_group_select").html(genericSelectTemplate(assignmentGroupsSelectInfo))
+      @form.find(".assignment_group").html(genericSelectOptionsTemplate(assignmentGroupsSelectOptionsInfo))
 
       # Update the edit and more options links with the new context
       @form.attr('action', @currentContextInfo.create_assignment_url)
@@ -109,7 +107,7 @@ define [
         dueAt = @form.find("#assignment_due_at").data('date')
       params = {
         'assignment[name]': @form.find("#assignment_title").val()
-        'assignment[due_at]': if dueAt then $.dateToISO8601UTC($.unfudgeDateForProfileTimezone(dueAt)) else ''
+        'assignment[due_at]': if dueAt then $.unfudgeDateForProfileTimezone(dueAt).toISOString() else ''
         'assignment[assignment_group_id]': @form.find(".assignment_group").val()
       }
 
@@ -117,7 +115,7 @@ define [
         objectData =
           assignment:
             title: params['assignment[name]']
-            due_at: if dueAt then $.dateToISO8601UTC(dueAt) else null
+            due_at: if dueAt then dueAt.toISOString() else null
             context_code: @form.find(".context_id").val()
         newEvent = commonEventFactory(objectData, @event.possibleContexts())
         newEvent.save(params)
@@ -131,7 +129,7 @@ define [
     submitOverride: (form) ->
       dueAt  = form['assignment_override[due_at]']
       dueAt  = if dueAt is '' then null else @form.find('#assignment_override_due_at').data('date')
-      params = 'assignment_override[due_at]': if dueAt then $.dateToISO8601UTC($.unfudgeDateForProfileTimezone(dueAt)) else ''
+      params = 'assignment_override[due_at]': if dueAt then $.unfudgeDateForProfileTimezone(dueAt).toISOString() else ''
       @event.start = dueAt
       @event.save(params)
       @closeCB()

@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -17,73 +17,91 @@
 #
 
 class GradeCalculator
-  
-  def initialize(user_ids, course_id, opts = {})
+  attr_accessor :submissions, :assignments, :groups
+
+  def initialize(user_ids, course, opts = {})
     opts = opts.reverse_merge(:ignore_muted => true)
 
-    @course_id = course_id
-    @course = Course.find(course_id)
-    @groups = @course.assignment_groups.active
-    @assignments = @course.assignments.active.only_graded
+    @course = course.is_a?(Course) ?
+      @course = course :
+      @course = Course.find(course)
+    @course_id = @course.id
+    assignment_scope = AssignmentGroup.assignment_scope_for_grading(@course)
+    @groups = @course.assignment_groups.active.includes(assignment_scope)
+    @assignments = @groups.flat_map(&assignment_scope).select(&:graded?)
     @user_ids = Array(user_ids).map(&:to_i)
-    @current_updates = []
-    @final_updates = []
+    @current_updates = {}
+    @final_updates = {}
     @ignore_muted = opts[:ignore_muted]
-  end
-  
-  def self.recompute_final_score(user_ids, course_id)
-    calc = GradeCalculator.new user_ids, course_id
-    calc.compute_scores
-    calc.save_scores
   end
 
   # recomputes the scores and saves them to each user's Enrollment
-  def compute_scores
-    all_submissions = @course.submissions.for_user(@user_ids).to_a
-    @user_ids.map do |user_id|
-      submissions = all_submissions.select { |submission| submission.user_id == user_id }
-      current = calculate_current_score(user_id, submissions)
-      final = calculate_final_score(user_id, submissions)
-      [current, final]
+  def self.recompute_final_score(user_ids, course_id)
+    user_ids = Array(user_ids).uniq.map(&:to_i)
+    return if user_ids.empty?
+    user_ids.in_groups_of(1000, false) do |user_ids_group|
+      calc = GradeCalculator.new user_ids_group, course_id
+      calc.compute_and_save_scores
     end
   end
 
-  def save_scores
-    raise "Can't save scores when ignore_muted is set" unless @ignore_muted
-
-    Course.update_all({:updated_at => Time.now.utc}, {:id => @course.id})
-    if !@current_updates.empty? || !@final_updates.empty?
-      query = "updated_at=#{Enrollment.sanitize(Time.now.utc)}"
-      query += ", computed_current_score=CASE #{@current_updates.join(" ")} ELSE computed_current_score END" unless @current_updates.empty?
-      query += ", computed_final_score=CASE #{@final_updates.join(" ")} ELSE computed_final_score END" unless @final_updates.empty?
-      Enrollment.update_all(query, {:user_id => @user_ids, :course_id => @course.id})
+  def compute_scores
+    @submissions = @course.submissions.
+        except(:order, :select).
+        for_user(@user_ids).
+        select("submissions.id, user_id, assignment_id, score")
+    submissions_by_user = @submissions.group_by(&:user_id)
+    @user_ids.map do |user_id|
+      user_submissions = submissions_by_user[user_id] || []
+      current, current_groups = calculate_current_score(user_id, user_submissions)
+      final, final_groups = calculate_final_score(user_id, user_submissions)
+      [[current, current_groups], [final, final_groups]]
     end
+  end
+
+  def compute_and_save_scores
+    compute_scores
+    save_scores
   end
 
   private
-  
+
+  def save_scores
+    raise "Can't save scores when ignore_muted is false" unless @ignore_muted
+
+    Course.where(:id => @course).update_all(:updated_at => Time.now.utc)
+    query = "updated_at=#{Enrollment.sanitize(Time.now.utc)}"
+    query += ", computed_current_score=CASE user_id #{@current_updates.map { |user_id, grade| "WHEN #{user_id} THEN #{grade || "NULL"}"}.
+      join(" ")} ELSE computed_current_score END"
+    query += ", computed_final_score=CASE user_id #{@final_updates.map { |user_id, grade| "WHEN #{user_id} THEN #{grade || "NULL"}"}.
+      join(" ")} ELSE computed_final_score END"
+    Enrollment.where(:user_id => @user_ids, :course_id => @course).update_all(query)
+  end
+
   # The score ignoring unsubmitted assignments
   def calculate_current_score(user_id, submissions)
-    group_sums = create_group_sums(submissions)
-    score = calculate_total_from_group_scores(group_sums)
-    @current_updates << "WHEN user_id=#{user_id} THEN #{score || "NULL"}"
-    score
+    calculate_score(submissions, user_id, @current_updates, true)
   end
 
   # The final score for the class, so unsubmitted assignments count as zeros
   def calculate_final_score(user_id, submissions)
-    group_sums = create_group_sums(submissions, false)
-    score = calculate_total_from_group_scores(group_sums)
-    @final_updates << "WHEN user_id=#{user_id} THEN #{score || "NULL"}"
-    score
+    calculate_score(submissions, user_id, @final_updates, false)
   end
- 
+
+  def calculate_score(submissions, user_id, grade_updates, ignore_ungraded)
+    group_sums = create_group_sums(submissions, ignore_ungraded)
+    info = calculate_total_from_group_scores(group_sums)
+    grade_updates[user_id] = info[:grade]
+    [info, group_sums.index_by { |s| s[:id] }]
+  end
+
   # returns information about assignments groups in the form:
   # [
   #   {
   #    :id       => 1
   #    :score    => 5,
   #    :possible => 7,
+  #    :grade    => 71.42,
   #    :weight   => 50},
   #   ...]
   # each group
@@ -95,7 +113,7 @@ class GradeCalculator
 
     @groups.map do |group|
       assignments = assignments_by_group_id[group.id] || []
-      
+
       group_submissions = assignments.map do |a|
         s = submissions_by_assignment_id[a.id]
 
@@ -123,6 +141,7 @@ class GradeCalculator
         :score    => score,
         :possible => possible,
         :weight   => group.group_weight,
+        :grade    => ((score.to_f / possible * 100).round(2) if possible > 0),
       }
     end
   end
@@ -206,6 +225,10 @@ class GradeCalculator
         q_high = q_mid :
         q_low  = q_mid
       q_mid = (q_low + q_high) / 2
+
+      # bail if we can't can't ever satisfy the threshold (floats!)
+      break if q_mid == q_high || q_mid == q_low
+
       x, kept = big_f_blk.call(q_mid, submissions, cant_drop, keep)
     end
 
@@ -253,8 +276,8 @@ class GradeCalculator
   def big_f_worst(q, submissions, cant_drop, keep)
     big_f(q, submissions, cant_drop, keep) { |(a,_),(b,_)| a <=> b }
   end
-  
-  # Calculates the final score from the sums of all the assignment groups
+
+  # returns grade information from all the assignment groups
   def calculate_total_from_group_scores(group_sums)
     if @course.group_weighting_scheme == 'percent'
       relevant_group_sums = group_sums.reject { |gs|
@@ -272,16 +295,20 @@ class GradeCalculator
         final_grade *= 100.0 / full_weight
       end
 
-      final_grade ? final_grade.round(1) : nil
+      {:grade => final_grade.try(:round, 1)}
     else
       total, possible = group_sums.reduce([0,0]) { |(m,n),gs|
         [m + gs[:score], n + gs[:possible]]
       }
       if possible > 0
         final_grade = (total.to_f / possible) * 100
-        final_grade.round(1)
+        {
+          :grade => final_grade.round(1),
+          :total => total.to_f,
+          :possible => possible,
+        }
       else
-        nil
+        {:grade => nil, :total => total.to_f}
       end
     end
   end

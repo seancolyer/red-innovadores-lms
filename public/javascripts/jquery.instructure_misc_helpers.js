@@ -24,7 +24,7 @@ define([
   'str/htmlEscape',
   'compiled/str/TextHelper',
   'jquery.ajaxJSON' /* ajaxJSON */,
-  'jquery.instructure_forms' /* formSuggestion */,
+  'jquery.instructure_forms',
   'jqueryui/dialog',
   'vendor/jquery.scrollTo' /* /\.scrollTo/ */
 ], function(INST, I18n, $, _, htmlEscape, TextHelper) {
@@ -115,6 +115,7 @@ define([
               notRightSideIsTallerThanRightSide = notRightSideHeight > rightSideHeight,
               rightSideBottomIsBelowMainBottom = ( headerHeight + $main.height() - windowScrollTop ) <= ( rightSideHeight + rightSideMarginBottom );
         }
+
         // windows chrome repaints when you set the class, even if the classes
         // aren't truly changing, which wreaks havoc on open select elements.
         // so we only toggle if we really need to
@@ -128,7 +129,6 @@ define([
       var throttledOnScroll = _.throttle(onScroll, 50);
       throttledOnScroll();
       $window.scroll(throttledOnScroll);
-      setInterval(throttledOnScroll, 1000);
       scrollSideBarIsBound = true;
     }
   };
@@ -284,15 +284,14 @@ define([
     $dialog.find("button").attr('disabled', false);
     if( !$dialog.length ) {
       $dialog = $("<div id='instructure_image_search'/>")
-                  .append("<form id='image_search_form' style='margin-bottom: 5px;'>" +
+                  .append("<form id='image_search_form' class='form-inline' style='margin-bottom: 5px;'>" +
                             "<img src='/images/flickr_creative_commons_small_icon.png'/>&nbsp;&nbsp;" + 
-                            "<input type='text' class='query' style='width: 250px;' title='" +
+                            "<input type='text' class='query' style='width: 250px;' placeholder='" +
                             htmlEscape(I18n.t('tooltips.enter_search_terms', "enter search terms")) + "'/>" + 
                             "<button class='btn' type='submit'>" +
                             htmlEscape(I18n.t('buttons.search', "Search")) + "</button></form>")
                   .append("<div class='results' style='max-height: 240px; overflow: auto;'/>");
 
-      $dialog.find("form .query").formSuggestion();
       $dialog.find("form").submit(function(event) {
         event.preventDefault();
         event.stopPropagation();
@@ -318,6 +317,7 @@ define([
                   },
                   'class': "image_link",
                   src: image_url,
+                  tabindex: "0",
                   title: "embed " + (photo.title || ""),
                   alt: photo.title || ""
                 }))
@@ -331,14 +331,27 @@ define([
         // this request will be handled by window.jsonFlickerApi()
         $.getScript("https://secure.flickr.com/services/rest/?method=flickr.photos.search&format=json&api_key=734839aadcaa224c4e043eaf74391e50&per_page=25&license=1,2,3,4,5,6&sort=relevance&text=" + query);
       });
-      $dialog.delegate('.image_link', 'click', function(event) {
-        event.preventDefault();
+
+      var insertImage = function(image){
         $dialog.dialog('close');
         callback({
-          image_url: $(this).data('big_image_url') || $(this).attr('src'),
-          link_url: $(this).data('source'),
-          title: $(this).attr('alt')
+          image_url: $(image).data('big_image_url') || $(image).attr('src'),
+          link_url: $(image).data('source'),
+          title: $(image).attr('alt')
         });
+      }
+
+      $dialog.delegate('.image_link', 'click', function(event) {
+        event.preventDefault();
+        insertImage(this);
+      });
+
+      $dialog.delegate('.image_link','keyup', function(event) {
+        event.preventDefault();
+        var code = event.keyCode || event.which;
+        if(code == 13) { //Enter keycode
+          insertImage(this);
+        }
       });
     }
     $dialog.find("form img").attr('src', '/images/' + service_type + '_small_icon.png');

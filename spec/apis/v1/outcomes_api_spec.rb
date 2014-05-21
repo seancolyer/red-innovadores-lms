@@ -19,7 +19,7 @@
 
 require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 
-describe "Outcomes API", :type => :integration do
+describe "Outcomes API", type: :request do
   before :each do
     Pseudonym.any_instance.stubs(:works_for_account?).returns(true)
     user_with_pseudonym(:active_all => true)
@@ -34,7 +34,9 @@ describe "Outcomes API", :type => :integration do
     @account_user = @user.account_users.create(:account => @account)
     @outcome = @account.created_learning_outcomes.create!(
       :title => "My Outcome",
-      :description => "Description of my outcome")
+      :description => "Description of my outcome",
+      :vendor_guid => "vendorguid9000"
+    )
   end
 
   describe "show" do
@@ -45,7 +47,7 @@ describe "Outcomes API", :type => :integration do
                    :action => 'show',
                    :id => @outcome.id.to_s,
                    :format => 'json')
-      response.status.to_i.should == 200
+      response.should be_success
     end
 
     it "should require read permission" do
@@ -56,7 +58,7 @@ describe "Outcomes API", :type => :integration do
                    :action => 'show',
                    :id => @outcome.id.to_s,
                    :format => 'json')
-      response.status.to_i.should == 401
+      assert_status(401)
     end
 
     it "should not require any permission for global outcomes" do
@@ -67,7 +69,7 @@ describe "Outcomes API", :type => :integration do
                    :action => 'show',
                    :id => @outcome.id.to_s,
                    :format => 'json')
-      response.status.to_i.should == 200
+      response.should be_success
     end
 
     it "should still require a user for global outcomes" do
@@ -78,7 +80,7 @@ describe "Outcomes API", :type => :integration do
                    :action => 'show',
                    :id => @outcome.id.to_s,
                    :format => 'json')
-      response.status.to_i.should == 401
+      assert_status(401)
     end
 
     it "should 404 for deleted outcomes" do
@@ -88,7 +90,7 @@ describe "Outcomes API", :type => :integration do
                    :action => 'show',
                    :id => @outcome.id.to_s,
                    :format => 'json')
-      response.status.to_i.should == 404
+      assert_status(404)
     end
 
     it "should return the outcome json" do
@@ -103,6 +105,7 @@ describe "Outcomes API", :type => :integration do
         "context_type" => "Account",
         "title" => @outcome.title,
         "url" => api_v1_outcome_path(:id => @outcome.id),
+        "vendor_guid" => "vendorguid9000",
         "can_edit" => true,
         "description" => @outcome.description
       }
@@ -132,6 +135,7 @@ describe "Outcomes API", :type => :integration do
         "context_type" => "Account",
         "title" => @outcome.title,
         "url" => api_v1_outcome_path(:id => @outcome.id),
+        "vendor_guid" => "vendorguid9000",
         "can_edit" => true,
         "description" => @outcome.description,
         "points_possible" => 5,
@@ -153,7 +157,7 @@ describe "Outcomes API", :type => :integration do
                    :action => 'update',
                    :id => @outcome.id.to_s,
                    :format => 'json')
-      response.status.to_i.should == 401
+      assert_status(401)
     end
 
     it "should require manage_global_outcomes permission for global outcomes" do
@@ -165,7 +169,7 @@ describe "Outcomes API", :type => :integration do
                    :action => 'update',
                    :id => @outcome.id.to_s,
                    :format => 'json')
-      response.status.to_i.should == 401
+      assert_status(401)
     end
 
     it "should fail (400) if the outcome is invalid" do
@@ -184,7 +188,7 @@ describe "Outcomes API", :type => :integration do
                    { :points => 0, :description => "Does Not Meet Expectations" }
                  ]
                })
-      response.status.to_i.should == 400
+      assert_status(400)
     end
 
     it "should update the outcome" do
@@ -237,12 +241,14 @@ describe "Outcomes API", :type => :integration do
                  :id => @outcome.id.to_s,
                  :format => 'json' },
                { :title => "New Title",
-                 :description => "New Description" })
+                 :description => "New Description",
+                 :vendor_guid => "vendorguid9000"})
 
       json.should == {
         "id" => @outcome.id,
         "context_id" => @account.id,
         "context_type" => "Account",
+        "vendor_guid" => "vendorguid9000",
         "title" => "New Title",
         "url" => api_v1_outcome_path(:id => @outcome.id),
         "can_edit" => true,

@@ -5,7 +5,7 @@
 
 <% calendar_event = full_calendar_event %>
 <div id="full_calendar_event_holder" class="<%= 'editing' if @editing %>">
-  <div class="calendar_event content_underline_links" id="full_calendar_event">
+  <div class="calendar_event" id="full_calendar_event">
     <div style="float: right; text-align: right; font-size: 0.8em;">
       <div class="date_text" style="<%= hidden unless calendar_event && calendar_event.start_at %>">
         <span class="start_at_date_string" title="<%= date_string(calendar_event.start_at, :long) %>"><%= date_string(calendar_event.start_at, :long) %></span>
@@ -25,13 +25,13 @@
     <h2 class="title">
       <%= calendar_event.try_rescue(:title) %>
     </h2>
-    
+
     <div class="description user_content"><%= calendar_event && calendar_event.description && !calendar_event.description.empty? ? user_content(calendar_event.description) : t(:no_content, "No Content") %></div>
     <div class="course_id" style="display: none;"><%= @context.id if @context && @context.is_a?(Course) %></div>
   </div>
   <% if can_do(calendar_event, @current_user, :update_content) %>
   <% url = calendar_event.new_record? ? context_url(@context, :context_calendar_events_url) : context_url(@context, :context_calendar_event_url, calendar_event.id) %>
-  <% form_for calendar_event, :url => url, :html => {:method => (calendar_event.new_record? ? 'POST' : 'PUT'), :style => 'display: none;', :id => 'edit_calendar_event_form', :class => (calendar_event.new_record? ? 'new_event' : '')} do |f| %>
+  <%= form_for calendar_event, :url => url, :html => {:method => (calendar_event.new_record? ? 'POST' : 'PUT'), :style => 'display: none;', :id => 'edit_calendar_event_form', :class => (calendar_event.new_record? ? 'new_event' : '')} do |f| %>
   <table class="formtable full_calendar_event_table" style="width: 100%;">
     <% if can_do(calendar_event, @current_user, :update) %>
     <tr>
@@ -59,7 +59,10 @@
     <% end %>
     <tr>
       <td colspan="4">
-        <a href="#" style="font-size: 0.8em; float: right;" class="switch_full_calendar_event_view"><%= t '#links.switch_views', "Switch Views" %></a>
+        <div style="font-size: 0.8em; float: right;">
+          <a href="#" class="switch_full_calendar_event_view"><%= t '#editor.switch_editor_html', "HTML Editor" %></a>
+          <a href="#" class="switch_full_calendar_event_view" style="display:none;"><%= t '#editor.switch_editor_visual', "Visual Editor" %></a>
+        </div>
         <div>
           <%= before_label :event_description, "Event Description" %>
         </div>

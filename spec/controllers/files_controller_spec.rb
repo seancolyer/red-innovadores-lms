@@ -17,15 +17,14 @@
 #
 
 require File.expand_path(File.dirname(__FILE__) + '/../sharding_spec_helper.rb')
+require File.expand_path(File.dirname(__FILE__) + '/../spec_helper')
 
 describe FilesController do
   def course_folder
     @folder = @course.folders.create!(:name => "a folder", :workflow_state => "visible")
   end
   def io
-    require 'action_controller'
-    require 'action_controller/test_process.rb'
-    ActionController::TestUploadedFile.new(File.expand_path(File.dirname(__FILE__) + '/../fixtures/scribd_docs/doc.doc'), 'application/msword', true)
+    fixture_file_upload('scribd_docs/doc.doc', 'application/msword', true)
   end
   def course_file
     @file = factory_with_protected_attributes(@course.attachments, :uploaded_data => io)
@@ -52,7 +51,7 @@ describe FilesController do
     hash[@tag.id.to_s] = {:type => 'must_view'}
     @module.completion_requirements = hash
     @module.save!
-    @module.evaluate_for(@user, true, true).state.should eql(:unlocked)
+    @module.evaluate_for(@user, true).state.should eql(:unlocked)
   end
 
   def file_with_path(path)
@@ -145,7 +144,7 @@ describe FilesController do
 
       f2 = course_folder
       a2 = folder_file
-      get 'index', :course_id => @course.id, :folder_id => f2.id
+      get 'index', :course_id => @course.id, :folder_id => f2.id, :format => 'json'
       response.should be_success
       assigns[:current_folder].should eql(f2)
       assigns[:current_attachments].should_not be_nil
@@ -167,7 +166,7 @@ describe FilesController do
     end
 
     describe 'across shards' do
-      it_should_behave_like 'sharding'
+      specs_require_sharding
 
       before do
         @shard2.activate do
@@ -271,7 +270,8 @@ describe FilesController do
       file_in_a_module
       get 'show', :course_id => @course.id, :id => @file.id, :download => 1
       @module.reload
-      @module.evaluate_for(@user, true, true).state.should eql(:completed)
+      @module.evaluate_for(@user, true).state.should eql(:completed)
+      @file.reload.last_inline_view.should be_nil
     end
 
     it "should not mark a file as viewed for module progressions if the file is locked" do
@@ -280,7 +280,8 @@ describe FilesController do
       @file.save!
       get 'show', :course_id => @course.id, :id => @file.id, :download => 1
       @module.reload
-      @module.evaluate_for(@user, true, true).state.should eql(:unlocked)
+      @module.evaluate_for(@user, true).state.should eql(:unlocked)
+      @file.reload.last_inline_view.should be_nil
     end
 
     it "should not mark a file as viewed for module progressions just because the files#show view is rendered" do
@@ -289,7 +290,8 @@ describe FilesController do
       @file.save!
       get 'show', :course_id => @course.id, :id => @file.id
       @module.reload
-      @module.evaluate_for(@user, true, true).state.should eql(:unlocked)
+      @module.evaluate_for(@user, true).state.should eql(:unlocked)
+      @file.reload.last_inline_view.should be_nil
     end
 
     it "should mark files as viewed for module progressions if the file is previewed inline" do
@@ -297,7 +299,21 @@ describe FilesController do
       get 'show', :course_id => @course.id, :id => @file.id, :inline => 1
       json_parse.should == {'ok' => true}
       @module.reload
-      @module.evaluate_for(@user, true, true).state.should eql(:completed)
+      @module.evaluate_for(@user, true).state.should eql(:completed)
+      @file.reload.last_inline_view.should > 1.minute.ago
+    end
+
+    it "should record the inline view when a teacher previews a student's submission" do
+      course_with_student :active_all => true
+      @assignment = @course.assignments.create!(:title => 'upload_assignment', :submission_types => 'online_upload')
+      attachment_model :context => @student
+      @assignment.submit_homework @student, :attachments => [@attachment]
+
+      teacher_in_course :active_all => true
+      user_session @teacher
+      get 'show', :user_id => @student.id, :id => @attachment.id, :inline => 1
+      response.should be_success
+      @attachment.reload.last_inline_view.should > 1.minute.ago
     end
 
     it "should mark files as viewed for module progressions if the file data is requested and it includes the scribd_doc data" do
@@ -306,7 +322,8 @@ describe FilesController do
       @file.save!
       get 'show', :course_id => @course.id, :id => @file.id, :format => :json
       @module.reload
-      @module.evaluate_for(@user, true, true).state.should eql(:completed)
+      @module.evaluate_for(@user, true).state.should eql(:completed)
+      @file.reload.last_inline_view.should > 1.minute.ago
     end
 
     it "should not mark files as viewed for module progressions if the file data is requested and it doesn't include the scribd_doc data (meaning it got viewed in scribd inline) and google docs preview is disabled" do
@@ -321,17 +338,27 @@ describe FilesController do
 
       get 'show', :course_id => @course.id, :id => @file.id, :format => :json
       @module.reload
-      @module.evaluate_for(@user, true, true).state.should eql(:unlocked)
+      @module.evaluate_for(@user, true).state.should eql(:unlocked)
+      @file.reload.last_inline_view.should be_nil
     end
 
-    it "should redirect to an existing attachment with the same path as a deleted attachment" do
+    it "should redirect to the user's files URL when browsing to an attachment with the same path as a deleted attachment" do
       course_with_student_logged_in(:active_all => true)
-      old_file = course_file
-      old_file.display_name = 'holla'
-      old_file.save
-      old_file.destroy
+      unowned_file = course_file
+      unowned_file.display_name = 'holla'
+      unowned_file.save
+      unowned_file.destroy
 
-      get 'show', :course_id => @course.id, :id => old_file.id
+      get 'show', :course_id => @course.id, :id => unowned_file.id
+      assert_unauthorized
+
+      owned_file = course_file
+      owned_file.display_name = 'holla'
+      owned_file.user_id = @user.id
+      owned_file.save
+      owned_file.destroy
+
+      get 'show', :course_id => @course.id, :id => owned_file.id
       response.should be_redirect
       flash[:notice].should match(/has been deleted/)
       URI.parse(response['Location']).path.should == "/courses/#{@course.id}/files"
@@ -340,9 +367,18 @@ describe FilesController do
       new_file.display_name = 'holla'
       new_file.save
 
-      get 'show', :course_id => @course.id, :id => old_file.id
+      get 'show', :course_id => @course.id, :id => new_file.id
       response.should be_success
       assigns(:attachment).should == new_file
+    end
+
+    it "should work for quiz_statistics" do
+      course_with_teacher_logged_in(:active_all => true)
+      quiz_model
+      file = @quiz.statistics_csv('student_analysis').csv_attachment
+      get 'show', :quiz_statistics_id => file.reload.context.id,
+        :file_id => file.id, :download => '1', :verifier => file.uuid
+      response.should be_redirect
     end
 
     describe "scribd_doc" do
@@ -406,8 +442,22 @@ describe FilesController do
     it "should fail if the file path doesn't match" do
       course_with_teacher_logged_in(:active_all => true)
       file_in_a_module
-      proc { get "show_relative", :course_id => @course.id, :file_path => @file.full_display_path+"blah" }.should raise_error(ActiveRecord::RecordNotFound)
-      proc { get "show_relative", :file_id => @file.id, :course_id => @course.id, :file_path => @file.full_display_path+"blah" }.should raise_error(ActiveRecord::RecordNotFound)
+      assert_page_not_found do
+        get "show_relative", :course_id => @course.id, :file_path => @file.full_display_path+"blah"
+      end
+
+      assert_page_not_found do
+        get "show_relative", :file_id => @file.id, :course_id => @course.id, :file_path => @file.full_display_path+"blah"
+      end
+    end
+
+    it "should ignore bad file_ids" do
+      course_with_teacher_logged_in(:active_all => true)
+      file_in_a_module
+      get "show_relative", :file_id => @file.id + 1, :course_id => @course.id, :file_path => @file.full_display_path
+      response.should be_redirect
+      get "show_relative", :file_id => "blah", :course_id => @course.id, :file_path => @file.full_display_path
+      response.should be_redirect
     end
   end
 
@@ -513,13 +563,13 @@ describe FilesController do
       response.should be_success
       assigns[:attachment].should_not be_nil
       assigns[:attachment].id.should_not be_nil
+      assigns[:attachment][:user_id].should_not be_nil
       json = json_parse
       json.should_not be_nil
       json['id'].should eql(assigns[:attachment].id)
       json['upload_url'].should_not be_nil
       json['upload_params'].should_not be_nil
       json['upload_params'].should_not be_empty
-      json['remote_url'].should eql(false)
     end
 
     it "should create file placeholder (in s3 mode)" do
@@ -532,13 +582,13 @@ describe FilesController do
       response.should be_success
       assigns[:attachment].should_not be_nil
       assigns[:attachment].id.should_not be_nil
+      assigns[:attachment][:user_id].should_not be_nil
       json = json_parse
       json.should_not be_nil
       json['id'].should eql(assigns[:attachment].id)
       json['upload_url'].should_not be_nil
       json['upload_params'].should be_present
       json['upload_params']['AWSAccessKeyId'].should == 'stub_id'
-      json['remote_url'].should eql(true)
     end
 
     it "should not allow going over quota for file uploads" do
@@ -573,13 +623,12 @@ describe FilesController do
       json['upload_url'].should_not be_nil
       json['upload_params'].should be_present
       json['upload_params']['AWSAccessKeyId'].should == 'stub_id'
-      json['remote_url'].should eql(true)
     end
 
     it "should associate assignment submission for a group assignment with the group" do
       course_with_teacher(:active_all => true)
       student_in_course(:active_all => true)
-      category = @course.group_categories.create
+      category = group_category
       assignment = @course.assignments.create(:group_category => category, :submission_types => 'online_upload')
       group = category.groups.create(:context => @course)
       group.add_user(@student)
@@ -600,6 +649,32 @@ describe FilesController do
       assigns[:attachment].should_not be_nil
       assigns[:attachment].context.should == group
     end
+
+    context "sharding" do
+      specs_require_sharding
+
+      it "should create the attachment on the context's shard" do
+        local_storage!
+        @shard1.activate do
+          account = Account.create!
+          course_with_teacher_logged_in(:active_all => true, :account => account)
+        end
+        post 'create_pending', {:attachment => {
+            :context_code => @course.asset_string,
+            :filename => "bob.txt"
+        }}
+        response.should be_success
+        assigns[:attachment].should_not be_nil
+        assigns[:attachment].id.should_not be_nil
+        assigns[:attachment].shard.should == @shard1
+        json = json_parse
+        json.should_not be_nil
+        json['id'].should eql(assigns[:attachment].id)
+        json['upload_url'].should_not be_nil
+        json['upload_params'].should_not be_nil
+        json['upload_params'].should_not be_empty
+      end
+    end
   end
 
   describe "POST 'api_create'" do
@@ -608,13 +683,9 @@ describe FilesController do
       # based completely on the policy signature
       course_with_teacher(:active_all => true, :user => user_with_pseudonym)
       @attachment = factory_with_protected_attributes(Attachment, :context => @course, :file_state => 'deleted', :workflow_state => 'unattached', :filename => 'test.txt', :content_type => 'text')
-      @content = StringIO.new("test file")
-      enable_forgery_protection true
+      @content = Rack::Test::UploadedFile.new(File.join(ActionController::TestCase.fixture_path, 'courses.yml'), '')
       request.env['CONTENT_TYPE'] = 'multipart/form-data'
-    end
-
-    after do
-      enable_forgery_protection false
+      enable_forgery_protection
     end
 
     it "should accept the upload data if the policy and attachment are acceptable" do
@@ -622,28 +693,27 @@ describe FilesController do
       post "api_create", params[:upload_params].merge(:file => @content)
       response.should be_redirect
       @attachment.reload
-      @attachment.workflow_state.should == 'processed'
       # the file is not available until the third api call is completed
       @attachment.file_state.should == 'deleted'
-      @attachment.open.read.should == "test file"
+      @attachment.open.read.should == File.read(File.join(ActionController::TestCase.fixture_path, 'courses.yml'))
     end
 
     it "should reject a blank policy" do
       post "api_create", { :file => @content }
-      response.status.to_i.should == 400
+      assert_status(400)
     end
 
     it "should reject an expired policy" do
       params = @attachment.ajax_upload_params(@user.pseudonym, "", "", :expiration => -60)
       post "api_create", params[:upload_params].merge({ :file => @content })
-      response.status.to_i.should == 400
+      assert_status(400)
     end
 
     it "should reject a modified policy" do
       params = @attachment.ajax_upload_params(@user.pseudonym, "", "")
       params[:upload_params]['Policy'] << 'a'
       post "api_create", params[:upload_params].merge({ :file => @content })
-      response.status.to_i.should == 400
+      assert_status(400)
     end
 
     it "should reject a good policy if the attachment data is already uploaded" do
@@ -651,35 +721,54 @@ describe FilesController do
       @attachment.uploaded_data = @content
       @attachment.save!
       post "api_create", params[:upload_params].merge(:file => @content)
-      response.status.to_i.should == 400
+      assert_status(400)
     end
   end
 
-  describe "GET 'public_feed.atom'" do
-    before(:each) do
-      course_with_student(:active_all => true)
-      user_file
+  describe "public_url" do
+    before do
+      course_with_student :active_all => true
+      assignment_model :course => @course, :submission_types => %w(online_upload)
+      attachment_model :context => @student
+      @submission = @assignment.submit_homework @student, :attachments => [@attachment]
     end
 
-    it "should require authorization" do
-      get 'public_feed', :format => 'atom', :feed_code => @user.feed_code + 'x'
-      assigns[:problem].should match /The verification code is invalid/
+    context "with direct rights" do
+      before do
+        user_session @student
+      end
+
+      it "should give a download url" do
+        get "public_url", :id => @attachment.id
+        response.should be_success
+        data = json_parse
+        data.should == { "public_url" => @attachment.authenticated_s3_url }
+      end
     end
 
-    it "should include absolute path for rel='self' link" do
-      get 'public_feed', :format => 'atom', :feed_code => @user.feed_code
-      feed = Atom::Feed.load_feed(response.body) rescue nil
-      feed.should_not be_nil
-      feed.links.first.rel.should match(/self/)
-      feed.links.first.href.should match(/http:\/\//)
-    end
+    context "without direct rights" do
+      before do
+        teacher_in_course :active_all => true
+        user_session @teacher
+      end
 
-    it "should include an author for each entry" do
-      get 'public_feed', :format => 'atom', :feed_code => @user.feed_code
-      feed = Atom::Feed.load_feed(response.body) rescue nil
-      feed.should_not be_nil
-      feed.entries.should_not be_empty
-      feed.entries.all?{|e| e.authors.present?}.should be_true
+      it "should fail if no submission_id is given" do
+        get "public_url", :id => @attachment.id
+        assert_unauthorized
+      end
+
+      it "should allow a teacher to download a student's submission" do
+        get "public_url", :id => @attachment.id, :submission_id => @submission.id
+        response.should be_success
+        data = json_parse
+        data.should == { "public_url" => @attachment.authenticated_s3_url }
+      end
+
+      it "should verify that the requested file belongs to the submission" do
+        otherfile = attachment_model
+        get "public_url", :id => otherfile, :submission_id => @submission.id
+        assert_unauthorized
+      end
     end
   end
 end

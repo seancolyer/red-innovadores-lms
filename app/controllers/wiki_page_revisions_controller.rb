@@ -23,14 +23,19 @@ class WikiPageRevisionsController < ApplicationController
   before_filter { |c| c.active_tab = "pages" }
   
   def index
-    if authorized_action(@context, @current_user, :read)
+    if @context.feature_enabled?(:draft_state)
+      redirect_to polymorphic_url([@context, :named_page_revisions], :wiki_page_id => @page)
+      return
+    end
+
+    if authorized_action(@page, @current_user, :update_content)
       respond_to do |format|
         format.html {
           add_crumb(@page.title, named_context_url(@context, :context_wiki_page_url, @page))
           add_crumb(t("#crumbs.revisions", "Revisions"))
           log_asset_access(@page, "wiki", @wiki)
         }
-        format.json { render :json => @page.version_history.to_json(:methods => :version_number) }
+        format.json { render :json => @page.version_history.map{ |v| v.as_json(methods: :version_number) }}
       end
     end
   end
@@ -42,7 +47,7 @@ class WikiPageRevisionsController < ApplicationController
     # else.  It does divulge the page id, and current version number, though.
     # If we're not ok with that, we can add a permission check.
     @version = params[:wiki_page_id].to_i.to_s == params[:wiki_page_id] &&
-      Version.find(:first, :conditions => {:versionable_type => 'WikiPage', :versionable_id => params[:wiki_page_id]}, :order => 'number DESC')
+      Version.where(:versionable_type => 'WikiPage', :versionable_id => params[:wiki_page_id]).order('number DESC').first
     if !@version
       get_context
       get_wiki_page
@@ -54,7 +59,12 @@ class WikiPageRevisionsController < ApplicationController
   end
   
   def show
-    if authorized_action(@page, @current_user, :read)
+    if @context.feature_enabled?(:draft_state)
+      redirect_to polymorphic_url([@context, :named_page_revisions], :wiki_page_id => @page)
+      return
+    end
+
+    if authorized_action(@page, @current_user, :update_content)
       if params[:id] == "latest"
         @revision = @page.versions[0]
       else
@@ -66,7 +76,7 @@ class WikiPageRevisionsController < ApplicationController
           log_asset_access(@page, "wiki", @wiki)
         }
         @model = @revision.model rescue nil
-        format.json { render :json => @model.to_json(:methods => :version_number) }
+        format.json { render :json => @model.as_json(:methods => :version_number) }
       end
     end
   end

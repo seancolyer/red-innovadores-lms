@@ -19,26 +19,24 @@
 require File.expand_path(File.dirname(__FILE__) + '/../spec_helper')
 
 describe GradebooksHelper do
-  
-  #Delete this example and add some real ones or delete this file
-  it "should be included in the object returned by #helper" do
-    included_modules = (class << helper; self; end).send :included_modules
-    included_modules.should be_include(GradebooksHelper)
-  end
-
   describe "gradebook_url_for" do
     let(:user) { User.new }
-    let(:context) { Course.new }
+    let(:context) { course }
     let(:assignment) { nil }
 
-    subject { helper.gradebook_url_for(user, context, assignment) }
+    subject {
+      helper.gradebook_url_for(user, context, assignment)
+    }
 
     before do
       context.stubs(:id => 1)
     end
 
     context "when the user prefers gradebook1" do
-      before { user.stubs(:prefers_gradebook2? => false) }
+      before do
+        user.stubs(:prefers_gradebook2? => false)
+        context.stubs(:feature_enabled?).with(:screenreader_gradebook).returns(false)
+      end
 
       it { should match /#{"/courses/1/gradebook"}$/ }
 
@@ -65,6 +63,26 @@ describe GradebooksHelper do
     context "with a nil user" do
       let(:user) { nil }
       it { should match /#{"/courses/1/gradebook2"}$/ }
+    end
+
+    context "with screenreader_gradebook enabled" do
+      before do
+        context.stubs(:feature_enabled?).with(:screenreader_gradebook).returns(true)
+      end
+
+      context "when the user prefers srgb" do
+        before {
+          user.stubs(:prefers_gradebook2? => false)
+          user.stubs(:gradebook_preference => 'srgb')
+        }
+        it { should match /#{"/courses/1/screenreader_gradebook"}$/ }
+      end
+
+      context "when the user prefers gb2" do
+        before { user.stubs(:gradebook_preference => '2') }
+        it { should match /#{"/courses/1/gradebook2"}$/ }
+      end
+
     end
   end
 end

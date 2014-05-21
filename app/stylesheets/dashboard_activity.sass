@@ -1,5 +1,8 @@
 @import environment
 
+#right-side .placeholder
+  height: 200px
+
 .recent-activity-header
   margin: 0
   padding: 10px
@@ -37,12 +40,13 @@
   padding: 10px 0 10px 10px
   cursor: pointer
   display: table
-  +unselectable
+  +user-select(none)
+  .toggle-details
+    text-transform: uppercase
+    font-size: 0.75em
   &:hover
     background: $hover-color
     .toggle-details
-      text-transform: uppercase
-      font-size: 0.75em
       text-indent: 0
       text-align: right
 
@@ -107,7 +111,7 @@ $ignore-col-width: 50px
     text-decoration: none
 
 .fake-link
-  color: $link_color
+  color: $linkColor
   &:hover
     text-decoration: underline
 
@@ -129,3 +133,4 @@ $dashboardIconSize: 32px
   line-height: $dashboardIconSize
   &:before
     color: #ccc
+    font-size: $dashboardIconSize

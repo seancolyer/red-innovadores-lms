@@ -68,14 +68,15 @@ class Handlebars
       if css = get_css(id)
         dependencies << "compiled/util/registerTemplateCss"
         # arguments[1] will be the registerTemplateCss function
-        css_registration = "\narguments[1]('#{id}', #{css.to_json});\n"
+        css_registration = "\narguments[1]('#{id}', #{MultiJson.dump css});\n"
       end
 
-      prepared = prepare_i18n(source, id)
-      dependencies << "i18n!#{normalize(id)}" if prepared[:keys].size > 0
+      scope = scopify(id)
+      prepared = prepare_i18n(source, scope)
+      dependencies << "i18n!#{scope}" if prepared[:keys].size > 0
 
       # take care of `require`ing partials
-      partials = context.call("findPartialDeps", prepared[:content]).uniq
+      partials = find_partial_deps(prepared[:content])
       partials.each do |partial|
         split = partial.split /\//
         split[-1] = "_#{split[-1]}"
@@ -85,7 +86,7 @@ class Handlebars
 
       template = context.call "Handlebars.precompile", prepared[:content]
       <<-JS
-define('#{plugin ? plugin + "/" : ""}jst/#{id}', #{dependencies.to_json}, function (Handlebars) {
+define('#{plugin ? plugin + "/" : ""}jst/#{id}', #{MultiJson.dump dependencies}, function (Handlebars) {
   var template = Handlebars.template, templates = Handlebars.templates = Handlebars.templates || {};
   templates['#{id}'] = template(#{template});
   #{partial_registration}
@@ -95,14 +96,15 @@ define('#{plugin ? plugin + "/" : ""}jst/#{id}', #{dependencies.to_json}, functi
 JS
     end
 
-    def normalize(id)
+    # change a partial path into an i18n scope
+    # e.g. "fooBar/_lolz" -> "foo_bar.lolz"
+    def scopify(id)
       # String#underscore may not be available
       id.sub(/^_/, '').gsub(/([A-Z]+)([A-Z][a-z])/,'\1_\2').gsub(/([a-z\d])([A-Z])/,'\1_\2').tr("-", "_").downcase.gsub(/\/_?/, '.')
     end
 
     def prepare_i18n(source, scope)
       @extractor ||= I18nExtraction::HandlebarsExtractor.new
-      scope = scope.sub(/\A_/, '').gsub(/\/_?/, '.')
       keys = []
       content = @extractor.scan(source, :method => :gsub) do |data|
         wrappers = data[:wrappers].map{ |value, delimiter| " w#{delimiter.size-1}=#{value.inspect}" }.join
@@ -124,36 +126,15 @@ JS
       @context ||= self.set_context
     end
 
+    def find_partial_deps(template)
+      # finds partials like: {{>foo bar}} and {{>[foo/bar] baz}}
+      template.scan(/\{\{>\s?\[?(.+?)\]?( .*?)?}}/).map {|m| m[0].strip }.uniq
+    end
+
     # Compiles and caches the handlebars JavaScript
     def set_context
-      handlebars_source = File.read(File.dirname(__FILE__) + '/vendor/handlebars.js')
-      find_partial_deps_fn = """
-        function findPartialDeps( source ) {
-          var nodes = Handlebars.parse(source);
-
-          function recursiveNodeSearch( statements, res ) {
-            statements.forEach(function ( statement ) {
-              if ( statement && statement.type === 'partial' ) {
-                  res.push(statement.id.string);
-              }
-              if ( statement && statement.program && statement.program.statements ) {
-                recursiveNodeSearch( statement.program.statements, res );
-              }
-              if ( statement && statement.program && statement.program.inverse && statement.program.inverse.statements ) {
-                recursiveNodeSearch( statement.program.inverse.statements, res );
-              }
-            });
-            return res;
-          }
-
-          var res   = [];
-          if ( nodes && nodes.statements ) {
-            res = recursiveNodeSearch( nodes.statements, [] );
-          }
-          return res;
-        }
-      """
-      @context = ExecJS.compile handlebars_source + find_partial_deps_fn
+      handlebars_source = File.read('public/javascripts/bower/handlebars/handlebars.js')
+      @context = ExecJS.compile handlebars_source
     end
   end
 end

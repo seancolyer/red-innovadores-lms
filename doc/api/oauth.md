@@ -29,7 +29,10 @@ When appropriate, applications should store the token locally, rather
 the requesting a new token for the same user each time the user uses the
 application. If the token is deleted or expires, the application will
 get a 401 Unauthorized error from the API, in which case the application should
-perform the OAuth flow again to receive a new token.
+perform the OAuth flow again to receive a new token. You can differentiate this
+401 Unauthorized from other cases where the user simply does not have
+permission to access the resource by checking that the WWW-Authenticate header
+is set.
 
 Storing a token is in many ways equivalent to storing the user's
 password, so tokens should be stored and used in a secure manner,
@@ -71,7 +74,32 @@ an authenticated request to the following endpoint:
 
 <h3 class="endpoint">DELETE /login/oauth2/token</h3>
 
+<h4>Parameters</h4>
+
+<ul class="argument">
+  <li>
+    <span class="name">expire_sessions</span>
+    <div class="inline">
+      optional.  Set this to '1' if you want to end all of the user's
+Canvas web sessions.  Without this argument, the endpoint will leave web sessions intact.
+    </div>
+  </li>
+</ul>
+
 </div>
+
+Oauth2 Based Identity Service
+-----------------------------
+Your application can rely on canvas for a user's identity.  During step 1 of
+the web application flow below, specify the optional scopes parameter as
+scopes=/auth/userinfo.  When the user is asked to grant your application
+access in step 2 of the web application flow, they will also be given an
+option to remember their authorization.  If they grant access and remember
+the authorization, Canvas will skip step 2 of the request flow for future requests.
+
+Canvas will not give a token back as part of a userinfo request.  It will only
+provide the current user's name and id.
+
 
 OAuth2 Token Request Flow
 -------------------------
@@ -126,6 +154,33 @@ currently supported value is <code>code</code>.
 authorization. The domain of this URL must match the domain of the
 redirect_uri stored on the developer key, or it must be a subdomain of
 that domain.
+    </div>
+  </li>
+  <li>
+    <span class="name">scopes</span>
+    <div class="inline">
+      optional. This can be used to specify what information the access token
+      will provide access to.  By default an access token will have access to
+      all api calls that a user can make.  The only other accepted value
+      for this at present is '/auth/userinfo', which can be used to obtain
+      the current canvas user's identity
+    </div>
+  </li>
+  <li>
+    <span class="name">purpose</span>
+    <div class="inline">
+      optional. This can be used to help the user identify which instance
+      of an application this token is for. For example, a mobile device
+      application could provide the name of the device.
+    </div>
+  </li>
+  <li>
+    <span class="name">force_login</span>
+    <div class="inline">
+      optional. Set to '1' if you want to force the user to enter their
+      credentials, even if they're already logged into Canvas. By default,
+      if a user already has an active Canvas web session, they will not be
+      asked to re-enter their credentials.
     </div>
   </li>
 </ul>
@@ -248,6 +303,24 @@ currently supported value is <code>code</code>.
       required. For native applications, currently the only supported value is
 <code>urn:ietf:wg:oauth:2.0:oob</code>, signifying that the credentials will be
 retrieved out-of-band using an embedded browser or other functionality.
+    </div>
+  </li>
+  <li>
+    <span class="name">scopes</span>
+    <div class="inline">
+      optional. This can be used to specify what information the access token
+      will provide access to.  By default an access token will have access to
+      all api calls that a user can make.  The only other accepted value
+      for this at present is '/auth/userinfo', which can be used to obtain
+      the current canvas user's identity
+    </div>
+  </li>
+  <li>
+    <span class="name">purpose</span>
+    <div class="inline">
+      optional. This can be used to help the user identify which instance
+      of an application this token is for. For example, a mobile device
+      application could provide the name of the device.
     </div>
   </li>
 </ul>

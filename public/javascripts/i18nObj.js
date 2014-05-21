@@ -3,8 +3,9 @@ define([
   'str/htmlEscape',
   'str/pluralize',
   'str/escapeRegex',
+  'compiled/str/i18nLolcalize',
   'vendor/date' /* Date.parse, Date.UTC */
-], function($, htmlEscape, pluralize, escapeRegex) {
+], function($, htmlEscape, pluralize, escapeRegex, i18nLolcalize) {
 
 // Instantiate the object, export globally for tinymce/specs
 var I18n = window.I18n = {};
@@ -22,24 +23,20 @@ I18n.locale = document.documentElement.getAttribute('lang');
 // anything not already safe should be html-escaped
 I18n.PLACEHOLDER = /%h?\{(.*?)\}/gm;
 
-I18n.isValidNode = function(obj, node) { 
+I18n.isValidNode = function(obj, node) {
   // handle names like "foo.bar.baz"
   var nameParts = node.split('.');
   for (var j=0; j < nameParts.length; j++) {
-    if (!(nameParts[j] in obj)) return false;
     obj = obj[nameParts[j]];
+    if (typeof obj === 'undefined' || obj === null) return false;
   }
-  return true; 
+  return true;
 };
 
 I18n.lookup = function(scope, options) {
   var translations = this.prepareOptions(I18n.translations);
   var messages = translations[I18n.currentLocale()];
   options = this.prepareOptions(options);
-
-  if (!messages) {
-    return;
-  }
 
   if (typeof(scope) == "object") {
     scope = scope.join(this.defaultSeparator);
@@ -51,13 +48,9 @@ I18n.lookup = function(scope, options) {
 
   scope = scope.split(this.defaultSeparator);
 
-  while (scope.length > 0) {
+  while (messages && scope.length > 0) {
     var currentScope = scope.shift();
     messages = messages[currentScope];
-
-    if (!messages) {
-      break;
-    }
   }
 
   if (!messages && this.isValidNode(options, "defaultValue")) {
@@ -102,6 +95,9 @@ I18n.interpolate = function(message, options) {
   if (options.wrapper) {
     needsEscaping = true;
     message = this.applyWrappers(message, options.wrapper);
+  }
+  if (options.needsEscaping) {
+    needsEscaping = true;
   }
 
   matches = message.match(this.PLACEHOLDER) || [];
@@ -150,7 +146,7 @@ I18n.applyWrappers = function(string, wrappers) {
     keys.push(key);
   }
   keys.sort().reverse();
-  for (var i in keys) {
+  for (var i=0, l=keys.length; i < l; i++) {
     key = keys[i];
     if (!this.wrapperRegexes[key]) {
       var escapedKey = escapeRegex(key);
@@ -246,11 +242,9 @@ I18n.toTime = function(scope, d) {
 
 I18n.strftime = function(date, format) {
   var options = this.lookup("date");
-
-  if (!options) {
-    return date.toString();
+  if (options) {
+    options.meridian = options.meridian || ["AM", "PM"];
   }
-  options.meridian = options.meridian || ["AM", "PM"];
 
   var weekDay = date.getDay();
   var day = date.getDate();
@@ -296,6 +290,7 @@ I18n.strftime = function(date, format) {
       %W  // week number of year, starting with the first Monday as the first day of the 01st week (00..53)
       %Z  // time zone name
   */
+  var optionsNeeded = false;
   var f = format.replace(/%([DFrRTv])/g, function(str, p1) {
     return {
       D: '%m/%d/%y',
@@ -306,6 +301,21 @@ I18n.strftime = function(date, format) {
       v: '%e-%b-%Y'
     }[p1];
   }).replace(/%(%|\-?[a-zA-Z]|3N)/g, function(str, p1) {
+    // check to see if we need an options object
+    switch (p1) {
+      case 'a':
+      case 'A':
+      case 'b':
+      case 'B':
+      case 'h':
+      case 'p':
+      case 'P':
+        if (options == null) {
+          optionsNeeded = true;
+          return '';
+        }
+    }
+
     switch (p1) {
       case 'a':  return options.abbr_day_names[weekDay];
       case 'A':  return options.day_names[weekDay];
@@ -345,6 +355,10 @@ I18n.strftime = function(date, format) {
       default:   return str;
     }
   });
+
+  if (optionsNeeded) {
+    return date.toString();
+  }
 
   return f;
 };
@@ -511,6 +525,11 @@ I18n.l = I18n.localize;
 I18n.p = I18n.pluralize;
 
 
+var normalizeDefault = function(str) { return str };
+if (window.ENV && window.ENV.lolcalize) {
+  normalizeDefault = i18nLolcalize;
+}
+
 I18n.scoped = function(scope, callback) {
   var i18n_scope = new I18n.scope(scope);
   if (callback) {
@@ -537,7 +556,7 @@ I18n.scope.prototype = {
     if (typeof(options.count) != 'undefined' && typeof(defaultValue) == "string" && defaultValue.match(/^[\w\-]+$/)) {
       defaultValue = pluralize.withCount(options.count, defaultValue);
     }
-    options.defaultValue = defaultValue;
+    options.defaultValue = normalizeDefault(defaultValue);
     return I18n.translate(this.resolveScope(scope), options);
   },
   localize: function(scope, value) {

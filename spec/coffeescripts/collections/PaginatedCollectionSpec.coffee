@@ -1,38 +1,14 @@
 define [
+  'jquery'
   'Backbone'
   'compiled/collections/PaginatedCollection'
-], (Backbone, PaginatedCollection) ->
-
-  # helper to get a fake page from the "server", gives you some fake model data
-  # and the Link header, don't send it a page greater than 10 or less than 1
-  getFakePage = (thisPage = 1) ->
-    url = (page) -> "/api/v1/context/2/resource?page=#{page}&per_page=2"
-    lastID = thisPage * 2
-    urls =
-      first: url 1
-      last: url 10
-    links = []
-    if thisPage < 10
-      urls.next = url thisPage + 1
-      links.push '<' + urls.next + '>; rel="next"'
-    if thisPage > 1
-      urls.prev = url thisPage - 1
-      links.push '<' + urls.prev + '>; rel="prev"'
-    links.push '<' + urls.first + '>; rel="first"'
-    links.push '<' + urls.last + '>; rel="last"'
-
-    urls: urls
-    header: links.join ','
-    data: [
-      id: lastID - 1, foo: 'bar', baz: 'qux'
-    ,
-      id: lastID, foo: 'bar', baz: 'qux'
-    ],
+  'helpers/getFakePage'
+], ($, Backbone, PaginatedCollection, getFakePage) ->
 
   module 'PaginatedCollection',
     setup: ->
       @server = sinon.fakeServer.create()
-      @collection = new PaginatedCollection null
+      @collection = new PaginatedCollection null,
         params:
           multi: ['foos', 'bars']
           single: 1
@@ -75,6 +51,26 @@ define [
     @collection.fetch()
     @server.sendPage page, @collection.urlWithParams()
 
+  test 'fetches current page', 10, ->
+    page1 = getFakePage 1
+
+    @collection.fetch success: =>
+      equal @collection.models.length, 2, 'added models to collection'
+      equal @collection.models[0].get('id'), 1, 'added model to collection'
+      equal @collection.models[1].get('id'), 2, 'added model to collection'
+      equal @collection.urls.current, page1.urls.current, 'current url matches'
+    @server.sendPage page1, @collection.urlWithParams()
+
+    @collection.on 'fetch:current', (self, modelData) ->
+      ok true, 'triggers fetch:current event'
+      deepEqual modelData, page1.data, 'passes data in'
+    @collection.fetch page: 'current', success: =>
+      equal @collection.models.length, 2, 'added models to collection'
+      equal @collection.models[0].get('id'), 1, 'passed in model to current page handler'
+      equal @collection.models[1].get('id'), 2, 'passed in model to current page handler'
+      equal @collection.urls.current, page1.urls.current, 'current url matches'
+    @server.sendPage page1, @collection.urls.current
+
   test 'fetches next page', 8, ->
     page1 = getFakePage 1
     page2 = getFakePage 2
@@ -92,7 +88,6 @@ define [
       equal @collection.models[2].get('id'), 3, 'passed in model to next page handler'
       equal @collection.models[3].get('id'), 4, 'passed in model to next page handler'
       equal @collection.urls.next, page2.urls.next, 'next url matches'
-    console.log @collection.urls.next
     @server.sendPage page2, @collection.urls.next
 
   test 'fetches previous page', 8, ->
@@ -117,7 +112,7 @@ define [
 
     @server.sendPage page1, @collection.urls.prev
 
-  test 'fetches prev, next, top and bottom pages', 8, ->
+  test 'fetches current, prev, next, top and bottom pages', 8, ->
     page1 = getFakePage 1
     page2 = getFakePage 2
     page3 = getFakePage 3
@@ -129,6 +124,13 @@ define [
       expectedUrls.top = page3.urls.prev
       expectedUrls.bottom = page3.urls.next
       deepEqual @collection.urls, expectedUrls, 'urls are as expected for fetch'
+    @server.sendPage page3, @collection.urlWithParams()
+
+    @collection.fetch page: 'current', success: =>
+      expectedUrls = page3.urls
+      expectedUrls.top = page3.urls.prev
+      expectedUrls.bottom = page3.urls.next
+      deepEqual @collection.urls, expectedUrls, 'urls are as expected for fetch current'
     @server.sendPage page3, @collection.urlWithParams()
 
     @collection.fetch page: 'prev', success: =>

@@ -1,18 +1,15 @@
 require File.expand_path(File.dirname(__FILE__) + '/../common')
 
-shared_examples_for "discussions selenium tests" do
-  it_should_behave_like "in-process server selenium tests"
 
   def go_to_topic
     get "/courses/#{@course.id}/discussion_topics/#{@topic.id}"
-    wait_for_ajax_requests
+    wait_for_ajaximations
   end
 
   def create_and_go_to_topic(title = 'new topic', discussion_type = 'side_comment', is_locked = false)
     @topic = @course.discussion_topics.create!(:title => title, :discussion_type => discussion_type)
     if is_locked
-      @topic.workflow_state = 'locked'
-      @topic.save!
+      @topic.lock
       @topic.reload
     end
     go_to_topic
@@ -31,36 +28,40 @@ shared_examples_for "discussions selenium tests" do
   end
 
   def edit_entry(entry, text)
+    wait_for_ajaximations
     click_entry_option(entry, '.al-options:visible li:eq(1) a')
+    wait_for_ajaximations
     type_in_tiny 'textarea', text
     f('.edit-html-done').click
-    wait_for_ajax_requests
+    wait_for_ajaximations
     validate_entry_text(entry, text)
   end
 
   def delete_entry(entry)
-    keep_trying_until do
-      click_entry_option(entry, '.al-options:visible li:last-child a')
-      validate_entry_text(entry, "This entry has been deleted")
-      entry.save!
-      entry.reload
-      entry.workflow_state.should == 'deleted'
-    end
+    wait_for_ajaximations
+    click_entry_option(entry, '.al-options:visible li:last-child a')
+    confirm_dialog = driver.switch_to.alert
+    confirm_dialog.accept
+    wait_for_ajax_requests
+    entry.reload
+    entry.workflow_state.should == 'deleted'
   end
 
   def add_reply(message = 'message!', attachment = nil)
     @last_entry ||= f('#discussion_topic')
-    @last_entry.find_element(:css, '.discussion-reply-label').click
+    @last_entry.find_element(:css, '.discussion-reply-action').click
+    wait_for_ajaximations
     type_in_tiny 'textarea', message
 
     if attachment.present?
       filename, fullpath, data = get_file(attachment)
       @last_entry.find_element(:css, '.discussion-reply-add-attachment').click
+      wait_for_ajaximations
       @last_entry.find_element(:css, '.discussion-reply-attachments input').send_keys(fullpath)
     end
 
     submit_form('.discussion-reply-form')
-    wait_for_ajax_requests
+    wait_for_ajaximations
     keep_trying_until do
       id = DiscussionEntry.last.id
       @last_entry = f "#entry-#{id}"
@@ -82,6 +83,7 @@ shared_examples_for "discussions selenium tests" do
     fj(li_selector).should be_displayed
     fj("#{li_selector} .al-trigger").should be_displayed
     fj("#{li_selector} .al-trigger").click
+    wait_for_ajaximations
     menu_item = fj(menu_item_selector)
     menu_item.should be_displayed
     menu_item.click
@@ -93,4 +95,3 @@ shared_examples_for "discussions selenium tests" do
     fj(menu_item_selector).click
     topic
   end
-end

@@ -17,7 +17,7 @@
 #
 
 class EportfolioEntry < ActiveRecord::Base
-  attr_accessible :eportfolio, :eportfolio_category, :name, :artifact_type, :attachment, :allow_comments, :show_comments, :url, :content
+  attr_accessible :eportfolio, :eportfolio_category, :name, :artifact_type, :attachment, :allow_comments, :show_comments, :url
   attr_readonly :eportfolio_id, :eportfolio_category_id
   belongs_to :eportfolio
   belongs_to :eportfolio_category
@@ -97,7 +97,7 @@ class EportfolioEntry < ActiveRecord::Base
       obj = params[("section_" + (idx + 1).to_s).to_sym].slice(:section_type, :content, :submission_id, :attachment_id)
       new_obj = {:section_type => obj[:section_type]}
       if obj[:section_type] == 'rich_text' || obj[:section_type] == 'html'
-        config = Instructure::SanitizeField::SANITIZE
+        config = CanvasSanitize::SANITIZE
         new_obj[:content] = Sanitize.clean(obj[:content] || '', config).strip
         new_obj = nil if new_obj[:content].empty?
       elsif obj[:section_type] == 'submission'
@@ -134,7 +134,8 @@ class EportfolioEntry < ActiveRecord::Base
     pages = self.eportfolio_category.eportfolio_entries rescue []
     self.name ||= t(:default_name, "Page Name")
     self.slug = self.name.gsub(/[\s]+/, "_").gsub(/[^\w\d]/, "")
-    match_cnt = pages.select{|p| p != self && p.slug && p.slug == self.slug}.length
+    pages = pages.where("id<>?", self) unless self.new_record?
+    match_cnt = pages.where(:slug => self.slug).count
     if match_cnt > 0
       self.slug = self.slug + "_" + (match_cnt + 1).to_s
     end

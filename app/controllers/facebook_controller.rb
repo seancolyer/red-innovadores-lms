@@ -20,24 +20,24 @@ class FacebookController < ApplicationController
   protect_from_forgery :only => []
   before_filter :get_facebook_user
   before_filter :require_facebook_user, :only => [:settings, :notification_preferences, :hide_message]
-  filter_parameter_logging :fb_sig_friends
-  
+
   def notification_preferences
     @cc = @user.communication_channels.find_by_path_type('facebook')
     if @cc
-      @old_policies = @cc.notification_policies
+      @old_policies = @cc.notification_policies.to_a
       @policies = []
       params[:types].each do |type, frequency|
         notifications = Notification.find_all_by_category(type)
         notifications.each do |notification|
-          pref = @cc.notification_policies.new
+          pref = @old_policies.find { |p| p.notification_id == notification.id }
+          pref ||= @cc.notification_policies.build
           pref.notification_id = notification.id
           pref.frequency = frequency
           @policies << pref unless frequency == 'never'
         end
       end
       NotificationPolicy.transaction do
-        @old_policies.each{|p| p.destroy}
+        @old_policies.each{|p| p.frequency = p.notification.default_frequency; p.save! if p.changed? }
         @policies.each{|p| p.save!}
       end
     end
@@ -50,7 +50,7 @@ class FacebookController < ApplicationController
   def hide_message
     @message = @user.messages.to_facebook.find(params[:id])
     @message.destroy
-    render :json => @message.to_json
+    render :json => @message
   end
   
   def index
@@ -62,8 +62,7 @@ class FacebookController < ApplicationController
     @messages = []
     if @user
       @messages = @user.messages.to_facebook.to_a
-      Facebook.dashboard_clear_count(@service) if @service
-      @domains = @user.pseudonyms.scoped({:include => :account}).to_a.once_per(&:account_id).map{|p| HostUrl.context_host(p.account) }.uniq
+      @domains = @user.pseudonyms.includes(:account).to_a.uniq(&:account_id).map{|p| HostUrl.context_host(p.account) }.uniq
     end
     respond_to do |format|
       format.html { render :action => 'index', :layout => 'facebook' }
@@ -109,7 +108,7 @@ class FacebookController < ApplicationController
       data, sig = Facebook.parse_signed_request(params[:signed_request])
       if data && sig
         if @facebook_user_id = data['user_id']
-          Shard.with_each_shard do
+          Shard.with_each_shard(UserService.associated_shards('facebook', @facebook_user_id)) do
             @service = UserService.find_by_service_and_service_user_id('facebook', @facebook_user_id)
             break if @service
           end
@@ -130,7 +129,7 @@ class FacebookController < ApplicationController
       @service = @user.user_services.find_by_service('facebook')
     elsif session[:facebook_user_id]
       @facebook_user_id = session[:facebook_user_id]
-      Shard.with_each_shard do
+      Shard.with_each_shard(UserService.associated_shards('facebook', @facebook_user_id)) do
         @service = UserService.find_by_service_and_service_user_id('facebook', @facebook_user_id)
         break if @service
       end

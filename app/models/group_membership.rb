@@ -25,44 +25,57 @@ class GroupMembership < ActiveRecord::Base
 
   attr_accessible :group, :user, :workflow_state, :moderator
   
-  before_save :ensure_mutually_exclusive_membership
   before_save :assign_uuid
   before_save :auto_join
   before_save :capture_old_group_id
 
+  validates_presence_of :group_id, :user_id, :workflow_state
   before_validation :verify_section_homogeneity_if_necessary
+  validate :validate_within_group_limit
 
+  after_save :ensure_mutually_exclusive_membership
   after_save :touch_groups
-  after_save :check_auto_follow_group
+  after_save :update_cached_due_dates
   after_destroy :touch_groups
-  after_destroy :check_auto_follow_group
-  
+
   has_a_broadcast_policy
-  
-  named_scope :include_user, :include => :user
-  
-  named_scope :active, :conditions => ['group_memberships.workflow_state != ?', 'deleted']
-  named_scope :moderators, :conditions => { :moderator => true }
+
+  scope :include_user, includes(:user)
+
+  scope :active, where("group_memberships.workflow_state<>'deleted'")
+  scope :moderators, where(:moderator => true)
 
   alias_method :context, :group
-  
+
   set_broadcast_policy do |p|
     p.dispatch :new_context_group_membership
     p.to { self.user }
-    p.whenever {|record| record.just_created && record.accepted? && record.group && record.group.context }
-    
+    p.whenever { |record|
+      record.just_created &&
+        record.accepted? &&
+        record.group &&
+        record.group.context &&
+        record.sis_batch_id.blank?
+    }
+
     p.dispatch :new_context_group_membership_invitation
     p.to { self.user }
-    p.whenever {|record| record.just_created && record.invited? && record.group && record.group.context }
-    
+    p.whenever { |record|
+      record.just_created &&
+        record.invited? &&
+        record.group &&
+        record.group.context &&
+        record.sis_batch_id.blank?
+    }
+
     p.dispatch :group_membership_accepted
     p.to { self.user }
     p.whenever {|record| record.changed_state(:accepted, :requested) }
-    
+
     p.dispatch :group_membership_rejected
     p.to { self.user }
     p.whenever {|record| record.changed_state(:rejected, :requested) }
-  
+
     p.dispatch :new_student_organized_group
     p.to { self.group.context.admins }
     p.whenever {|record|
@@ -73,9 +86,9 @@ class GroupMembership < ActiveRecord::Base
       record.group.student_organized?
     }
   end
-  
+
   def assign_uuid
-    self.uuid ||= AutoHandle.generate_securish_uuid
+    self.uuid ||= CanvasUuid::Uuid.generate_securish_uuid
   end
   protected :assign_uuid
 
@@ -90,18 +103,36 @@ class GroupMembership < ActiveRecord::Base
 
   def ensure_mutually_exclusive_membership
     return unless self.group
+    return if self.deleted?
     peer_groups = self.group.peer_groups.map(&:id)
-    GroupMembership.active.find(:all, :conditions => { :group_id => peer_groups, :user_id => self.user_id }).each {|gm| gm.destroy }
+    GroupMembership.active.where(:group_id => peer_groups, :user_id => self.user_id).destroy_all
   end
   protected :ensure_mutually_exclusive_membership
   
+  def restricted_self_signup?
+    self.group.group_category && self.group.group_category.restricted_self_signup?
+  end
+
+  def has_common_section_with_me?
+    self.group.has_common_section_with_user?(user)
+  end
+
   def verify_section_homogeneity_if_necessary
-    return true unless self.group.group_category && self.group.group_category.restricted_self_signup?
-    return true if self.group.has_common_section_with_user?(self.user)
-    self.errors.add(:user_id, t('errors.not_in_group_section', "%{student} does not share a section with the other members of %{group}.", :student => self.user.name, :group => self.group.name))
-    return false
+    if new_record? && restricted_self_signup? && !has_common_section_with_me?
+      errors.add(:user_id, t('errors.not_in_group_section', "%{student} does not share a section with the other members of %{group}.", :student => self.user.name, :group => self.group.name))
+      false
+    else
+      true
+    end
   end
   protected :verify_section_homogeneity_if_necessary
+
+  def validate_within_group_limit
+    if new_record? && group.full?
+      errors.add(:group_id, t('errors.group_full', 'The group is full.'))
+    end
+  end
+  protected :validate_within_group_limit
   
   attr_accessor :old_group_id
   def capture_old_group_id
@@ -110,19 +141,16 @@ class GroupMembership < ActiveRecord::Base
   end
   protected :capture_old_group_id
 
-  def check_auto_follow_group
-    if (self.id_changed? || self.workflow_state_changed?) && self.active?
-      UserFollow.create_follow(self.user, self.group)
-    elsif self.destroyed? || (self.workflow_state_changed? && self.deleted?)
-      user_follow = self.user.shard.activate { self.user.user_follows.find(:first, :conditions => { :followed_item_id => self.group_id, :followed_item_type => 'Group' }) }
-      user_follow.try(:destroy)
+  def update_cached_due_dates
+    if workflow_state_changed? && group.group_category_id && group.context_type == 'Course'
+      DueDateCacher.recompute_course(group.context_id, Assignment.where(context_type: group.context_type, context_id: group.context_id, group_category_id: group.group_category_id).pluck(:id))
     end
   end
   
   def touch_groups
     groups_to_touch = [ self.group_id ]
     groups_to_touch << self.old_group_id if self.old_group_id
-    Group.update_all({ :updated_at => Time.now.utc }, { :id => groups_to_touch })
+    Group.where(:id => groups_to_touch).update_all(:updated_at => Time.now.utc)
   end
   protected :touch_groups
   

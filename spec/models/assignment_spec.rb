@@ -28,7 +28,7 @@ describe Assignment do
     assignment_model
     @a.state.should eql(:published)
     @a.unpublish
-    @a.state.should eql(:available)
+    @a.state.should eql(:unpublished)
   end
 
   it "should always be associated with a group" do
@@ -50,12 +50,9 @@ describe Assignment do
   it "should touch assignment group on create/save" do
     course
     group = @course.assignment_groups.create!(:name => "Assignments")
-    AssignmentGroup.update_all({ :updated_at => 1.hour.ago }, { :id => group.id })
+    AssignmentGroup.where(:id => group).update_all(:updated_at => 1.hour.ago)
     orig_time = group.reload.updated_at.to_i
-    a = @course.assignments.build(
-                                          "title"=>"test",
-                                          "external_tool_tag_attributes"=>{"url"=>"", "new_tab"=>""}
-                                  )
+    a = @course.assignments.build("title"=>"test")
     a.assignment_group = group
     a.save!
     @course.assignments.count.should == 1
@@ -69,6 +66,28 @@ describe Assignment do
     @submission = @assignment.submissions.first
     @submission.user_id.should eql(@user.id)
     @submission.versions.length.should eql(1)
+  end
+
+  describe "#has_student_submissions?" do
+    before do
+      setup_assignment_with_students
+      @assignment.context.root_account.enable_feature!(:draft_state)
+    end
+
+    it "does not allow itself to be unpublished if it has student submissions" do
+      @assignment.submit_homework @stu1, :submission_type => "online_text_entry"
+      @assignment.should_not be_can_unpublish
+      @assignment.unpublish
+      @assignment.should_not be_valid
+      @assignment.errors['workflow_state'].should == ["Can't unpublish if there are student submissions"]
+    end
+
+    it "does allow itself to be unpublished if it has nil submissions" do
+      @assignment.submit_homework @stu1, :submission_type => nil
+      @assignment.should be_can_unpublish
+      @assignment.unpublish
+      @assignment.workflow_state.should == "unpublished"
+    end
   end
 
   describe '#grade_student' do
@@ -131,7 +150,7 @@ describe Assignment do
 
     it "should not update when non-student submissions transition state" do
       assignment_model
-      s = Assignment.find_or_create_submission(@assignment.id, @teacher.id)
+      s = @assignment.find_or_create_submission(@teacher)
       s.submission_type = 'online_quiz'
       s.workflow_state = 'submitted'
       s.save!
@@ -167,7 +186,7 @@ describe Assignment do
                                   :enrollment_state => 'active', 
                                   :section => section3,
                                   :allow_multiple_enrollments => true)
-      @user.enrollments.count(:conditions => "workflow_state = 'active'").should eql(3)
+      @user.enrollments.where(:workflow_state => 'active').count.should eql(3)
       @assignment.reload
       @assignment.needs_grading_count.should eql(1)
   
@@ -181,21 +200,21 @@ describe Assignment do
       e.destroy
       @assignment.reload
       @assignment.needs_grading_count.should eql(0)
-      @user.enrollments.count(:conditions => "workflow_state = 'active'").should eql(0)
+      @user.enrollments.where(:workflow_state => 'active').count.should eql(0)
 
       # enroll the user as a teacher, it should have no effect
       e4 = @course.enroll_teacher(@user)
       e4.accept
       @assignment.reload
       @assignment.needs_grading_count.should eql(0)
-      @user.enrollments.count(:conditions => "workflow_state = 'active'").should eql(1)
+      @user.enrollments.where(:workflow_state => 'active').count.should eql(1)
     end
 
     it "updated_at should be set when needs_grading_count changes due to a submission" do
       setup_assignment_with_homework
       @assignment.needs_grading_count.should eql(1)
       old_timestamp = Time.now.utc - 1.minute
-      Assignment.update_all({:updated_at => old_timestamp}, {:id => @assignment.id})
+      Assignment.where(:id => @assignment).update_all(:updated_at => old_timestamp)
       @assignment.grade_student(@user, :grade => "0")
       @assignment.reload
       @assignment.needs_grading_count.should eql(0)
@@ -206,7 +225,7 @@ describe Assignment do
       setup_assignment_with_homework
       old_timestamp = Time.now.utc - 1.minute
       @assignment.needs_grading_count.should eql(1)
-      Assignment.update_all({:updated_at => old_timestamp}, {:id => @assignment.id})
+      Assignment.where(:id => @assignment).update_all(:updated_at => old_timestamp)
       @course.offer!
       @course.enrollments.find_by_user_id(@user.id).destroy
       @assignment.reload
@@ -328,7 +347,7 @@ describe Assignment do
     @submission.user_id.should eql(@user.id)
   end
 
-  it "should preserve letter grades with no points possible" do
+  it "should preserve letter grades grades with nil points possible" do
     setup_assignment_without_submission
     @assignment.grading_type = 'letter_grade'
     @assignment.points_possible = nil
@@ -342,6 +361,72 @@ describe Assignment do
     @submission.state.should eql(:graded)
     @submission.score.should eql(0.0)
     @submission.grade.should eql('C')
+    @submission.user_id.should eql(@user.id)
+  end
+
+  it "should preserve gpa scale grades with nil points possible" do
+    setup_assignment_without_submission
+    @assignment.grading_type = 'gpa_scale'
+    @assignment.points_possible = nil
+    @assignment.context.grading_standards.build({title: "GPA"})
+    gs = @assignment.context.grading_standards.last
+    gs.data = {"4.0" => 0.94,
+               "3.7" => 0.90,
+               "3.3" => 0.87,
+               "3.0" => 0.84,
+               "2.7" => 0.80,
+               "2.3" => 0.77,
+               "2.0" => 0.74,
+               "1.7" => 0.70,
+               "1.3" => 0.67,
+               "1.0" => 0.64,
+               "0" => 0.01,
+               "M" => 0.0 }
+    gs.assignments << @assignment
+    gs.save!
+    @assignment.save!
+
+    s = @assignment.grade_student(@user, :grade => '3.0')
+    s.should be_is_a(Array)
+    @assignment.reload
+    @assignment.submissions.size.should eql(1)
+    @submission = @assignment.submissions.first
+    @submission.state.should eql(:graded)
+    @submission.score.should eql(0.0)
+    @submission.grade.should eql('3.0')
+    @submission.user_id.should eql(@user.id)
+  end
+
+  it "should preserve gpa scale grades with zero points possible" do
+    setup_assignment_without_submission
+    @assignment.grading_type = 'gpa_scale'
+    @assignment.points_possible = 0.0
+    @assignment.context.grading_standards.build({title: "GPA"})
+    gs = @assignment.context.grading_standards.last
+    gs.data = {"4.0" => 0.94,
+               "3.7" => 0.90,
+               "3.3" => 0.87,
+               "3.0" => 0.84,
+               "2.7" => 0.80,
+               "2.3" => 0.77,
+               "2.0" => 0.74,
+               "1.7" => 0.70,
+               "1.3" => 0.67,
+               "1.0" => 0.64,
+               "0" => 0.01,
+               "M" => 0.0 }
+    gs.assignments << @assignment
+    gs.save!
+    @assignment.save!
+
+    s = @assignment.grade_student(@user, :grade => '3.0')
+    s.should be_is_a(Array)
+    @assignment.reload
+    @assignment.submissions.size.should eql(1)
+    @submission = @assignment.submissions.first
+    @submission.state.should eql(:graded)
+    @submission.score.should eql(0.0)
+    @submission.grade.should eql('3.0')
     @submission.user_id.should eql(@user.id)
   end
 
@@ -387,8 +472,23 @@ describe Assignment do
   end
 
   describe  "interpret_grade" do
+    before do
+      setup_assignment_without_submission
+    end
+
     it "should return nil when no grade was entered and assignment uses a grading standard (letter grade)" do
-      Assignment.interpret_grade("", 20, GradingStandard.default_grading_standard).should be_nil
+      @assignment.points_possible = 100
+      @assignment.interpret_grade("").should be_nil
+    end
+
+    it "should allow grading an assignment with nil points_possible" do
+      @assignment.points_possible = nil
+      @assignment.interpret_grade("100%").should == 0
+    end
+
+    it "should not round scores" do
+      @assignment.points_possible = 15
+      @assignment.interpret_grade("88.75%").should == 13.3125
     end
   end
 
@@ -421,18 +521,22 @@ describe Assignment do
     @assignment.muted?.should eql false
   end
 
-  describe "infer_due_at" do
+  describe "infer_times" do
     it "should set to all_day" do
-      assignment_model(:due_at => "Sep 3 2008 12:00am")
+      assignment_model(:due_at => "Sep 3 2008 12:00am",
+                      :lock_at => "Sep 3 2008 12:00am",
+                      :unlock_at => "Sep 3 2008 12:00am")
       @assignment.all_day.should eql(false)
-      @assignment.infer_due_at
+      @assignment.infer_times
       @assignment.save!
       @assignment.all_day.should eql(true)
       @assignment.due_at.strftime("%H:%M").should eql("23:59")
+      @assignment.lock_at.strftime("%H:%M").should eql("23:59")
+      @assignment.unlock_at.strftime("%H:%M").should eql("00:00")
       @assignment.all_day_date.should eql(Date.parse("Sep 3 2008"))
     end
 
-    it "should not set to all_day without infer_due_at call" do
+    it "should not set to all_day without infer_times call" do
       assignment_model(:due_at => "Sep 3 2008 12:00am")
       @assignment.all_day.should eql(false)
       @assignment.due_at.strftime("%H:%M").should eql("00:00")
@@ -574,19 +678,19 @@ describe Assignment do
 
   it "should destroy group overrides when the group category changes" do
     @assignment = assignment_model
-    @assignment.group_category = @assignment.context.group_categories.create!
+    @assignment.group_category = group_category(context: @assignment.context)
     @assignment.save!
 
     overrides = 5.times.map do
       override = @assignment.assignment_overrides.build
-      override.set = @assignment.group_category.groups.create!
+      override.set = @assignment.group_category.groups.create!(context: @assignment.context)
       override.save!
 
       override.workflow_state.should == 'active'
       override
     end
 
-    @assignment.group_category = @assignment.context.group_categories.create!
+    @assignment.group_category = group_category(context: @assignment.context, name: "bar")
     @assignment.save!
 
     overrides.each do |override|
@@ -605,32 +709,25 @@ describe Assignment do
       @course.enroll_student(@user).update_attribute(:workflow_state, 'accepted')
       @assignment.context.reload
 
-      dummy_sub = Submission.new
-      dummy_sub.assignment_id = @assignment.id
-      dummy_sub.user_id = @user.id
+      @assignment.submissions.scoped.delete_all
+      real_sub = @assignment.submissions.build(user: @user)
 
-      real_sub = Submission.new
-      real_sub.assignment_id = @assignment.id
-      real_sub.user_id = @user.id
-      real_sub.save!
-
-      Submission.expects(:find_or_initialize_by_assignment_id_and_user_id).
-        twice.
-        returns(dummy_sub).
-        returns(real_sub)
+      mock_submissions = Submission.none
+      mock_submissions.stubs(:build).returns(real_sub).once
+      @assignment.stubs(:submissions).returns(mock_submissions)
 
       sub = nil
       lambda {
         sub = yield(@assignment, @user)
       }.should_not raise_error
+      
       sub.should_not be_new_record
-      sub.should_not eql dummy_sub
       sub.should eql real_sub
     end
 
     it "should handle them gracefully in find_or_create_submission" do
       concurrent_inserts do |assignment, user|
-        Assignment.find_or_create_submission(assignment.id, user.id)
+        assignment.find_or_create_submission(user)
       end
     end
 
@@ -799,145 +896,7 @@ describe Assignment do
     end
   end
 
-  context "publishing" do
-    it "should publish automatically if set that way" do
-      course_model(:publish_grades_immediately => true)
-      @course.offer!
-      @enr1 = @course.enroll_student(@stu1 = user)
-      @enr2 = @course.enroll_student(@stu2 = user)
-      @assignment = @course.assignments.create(:title => "asdf", :points_possible => 10)
-      @assignment.should be_published
-      @sub1 = @assignment.grade_student(@stu1, :grade => 9).first
-      @sub1.score.should == 9.0
-      @sub1.published_score.should == @sub1.score
-    end
-
-    it "should NOT publish automatically if set that way" do
-      course_model(:publish_grades_immediately => false)
-      @course.offer!
-      @enr1 = @course.enroll_student(@stu1 = user)
-      @enr2 = @course.enroll_student(@stu2 = user)
-      @assignment = @course.assignments.create(:title => "asdf", :points_possible => 10)
-      @assignment.should_not be_published
-      @sub1 = @assignment.grade_student(@stu1, :grade => 9).first
-      @sub1.score.to_f.should == 9.0
-      @sub1.published_score.should == @sub1.score
-      # Took this out until someone asks for it
-      # @sub1.published_score.should_not == @sub1.score
-    end
-
-    it "should publish past submissions when the assignment is published" do
-      course_model(:publish_grades_immediately => false)
-      @course.offer!
-      @enr1 = @course.enroll_student(@stu1 = user)
-      @enr2 = @course.enroll_student(@stu2 = user)
-      @assignment = @course.assignments.create(:title => "asdf", :points_possible => 10)
-      @assignment.should_not be_published
-      @sub1 = @assignment.grade_student(@stu1, :grade => 9).first
-      @sub1.score.should == 9
-      # Took this out until someone asks for it
-      # @sub1.published_score.should_not == @sub1.score
-      @sub1.published_score.should == @sub1.score
-      @assignment.reload
-      @assignment.submissions.should be_include(@sub1)
-      @assignment.publish!
-      @assignment.should be_published
-      @sub1.reload
-      @sub1.score.should == 9
-      @sub1.published_score.should == @sub1.score
-    end
-
-    it "should re-publish correctly" do
-      course_model(:publish_grades_immediately => false)
-      @course.offer!
-      @enr1 = @course.enroll_student(@stu1 = user)
-      @enr2 = @course.enroll_student(@stu2 = user)
-      @assignment = @course.assignments.create(:title => "asdf", :points_possible => 10)
-      @assignment.should_not be_published
-      @sub1 = @assignment.grade_student(@stu1, :grade => 9).first
-      @sub1.score.should == 9
-      @sub1.published_score.should == @sub1.score
-      # Took this out until someone asks for it
-      # @sub1.published_score.should_not == @sub1.score
-      @assignment.reload
-      @assignment.submissions.should be_include(@sub1)
-      @assignment.publish!
-      @assignment.should be_published
-      @sub1.reload
-      @sub1.score.should == 9
-      @sub1.published_score.should == @sub1.score
-      @assignment.unpublish!
-      @assignment.should_not be_published
-      @sub1 = @assignment.grade_student(@stu1, :grade => 8).first
-      @sub1.score.should == 8
-      @sub1.published_score.should == 8
-      # Took this out until someone asks for it
-      # @sub1.published_score.should == 9
-      @sub2 = @assignment.grade_student(@stu2, :grade => 7).first
-      @sub2.score.should == 7
-      # Took this out until someone asks for it
-      # @sub2.published_score.should == nil
-      @sub2.published_score.should == 7
-      @assignment.reload
-      @assignment.submissions.should be_include(@sub2)
-      @assignment.publish!
-      @assignment.should be_published
-      @sub1.reload
-      @sub1.score.should == 8
-      @sub1.published_score == 8
-      @sub2.reload
-      @sub2.score.should == 7
-      @sub2.published_score.should == 7
-    end
-
-    it "should fire off assignment graded notification on first publish" do
-      setup_unpublished_assignment_with_students
-      @assignment.publish!
-      @assignment.should be_published
-      @assignment.messages_sent.should be_include("Assignment Graded")
-      @sub1.messages_sent.should be_empty
-    end
-
-    it "should not fire off assignment graded notification on first publish if muted" do
-      setup_unpublished_assignment_with_students
-      @assignment.mute!
-      @assignment.publish!
-      @assignment.should be_muted
-      @assignment.messages_sent.should_not be_include("Assignment Graded")
-    end
-
-    it "should fire off submission graded notifications if already published" do
-      setup_unpublished_assignment_with_students
-      @assignment.publish!
-      @assignment.should be_published
-      @sub2 = @assignment.grade_student(@stu2, :grade => 8).first
-      @sub2.messages_sent.should be_include("Submission Graded")
-      @sub2.messages_sent.should_not be_include("Submission Grade Changed")
-      @sub2.update_attributes(:graded_at => Time.now - 60*60)
-      @sub2 = @assignment.grade_student(@stu2, :grade => 9).first
-      @sub2.messages_sent.should_not be_include("Submission Graded")
-      @sub2.messages_sent.should be_include("Submission Grade Changed")
-    end
-
-    it "should not fire off submission graded notifications if already published but muted" do
-      setup_unpublished_assignment_with_students
-      @assignment.publish!
-      @assignment.mute!
-      @sub2 = @assignment.grade_student(@stu2, :grade => 8).first
-      @sub2.messages_sent.should_not be_include("Submission Graded")
-      @sub2.update_attributes(:graded_at => Time.now - 60*60)
-      @sub2 = @assignment.grade_student(@stu2, :grade => 9).first
-      @sub2.messages_sent.should_not be_include("Submission Grade Changed")
-    end
-
-    it "should not fire off assignment graded notification if started as published" do
-      setup_assignment
-      Notification.create!(:name => "Assignment Graded")
-      @assignment2 = @course.assignments.create(:title => "new assignment")
-      @assignment2.workflow_state = 'published'
-      @assignment2.messages_sent.should_not be_include("Assignment Graded")
-    end
-
+  context "grading letter grades" do
     it "should update grades when assignment changes" do
       setup_assignment_without_submission
       @a.update_attributes(:grading_type => 'letter_grade', :points_possible => 20)
@@ -948,7 +907,6 @@ describe Assignment do
       @sub = @assignment.grade_student(@student, :grader => @teacher, :grade => 'C').first
       @sub.grade.should eql('C')
       @sub.score.should eql(15.2)
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should == 76
 
       @assignment.points_possible = 30
@@ -956,7 +914,6 @@ describe Assignment do
       @sub.reload
       @sub.score.should eql(15.2)
       @sub.grade.should eql('F')
-      run_transaction_commit_callbacks
       @enrollment.reload.computed_current_score.should == 50.7
     end
 
@@ -970,58 +927,74 @@ describe Assignment do
       @sub.grade.should eql('C')
       @sub.score.should eql(15.2)
     end
+  end
 
-    it "should not fire off assignment graded notification on second publish" do
-      setup_unpublished_assignment_with_students
-      @assignment.publish!
-      @assignment.should be_published
-      @assignment.messages_sent.should be_include("Assignment Graded")
-      @assignment.clear_broadcast_messages
-      @assignment.messages_sent.should be_empty
-      @assignment.unpublish!
-      @assignment.should be_available
-      @assignment.messages_sent.should_not be_include("Assignment Graded")
-      @assignment.publish!
-      @assignment.should be_published
-      @assignment.messages_sent.should_not be_include("Assignment Graded")
-    end
-
-    it "should not fire off submission graded notifications while unpublished" do
-      setup_unpublished_assignment_with_students
-      @assignment.publish!
-      @assignment.should be_published
-      @assignment.unpublish!
-      @assignment.should be_available
-      @sub2 = @assignment.grade_student(@stu2, :grade => 8).first
-      @sub2.messages_sent.should be_empty
-      @sub2.update_attributes(:graded_at => Time.now - 60*60)
-      @sub2 = @assignment.grade_student(@stu2, :grade => 9).first
-      @sub2.messages_sent.should be_empty
-    end
-
-    it" should fire off submission graded notifications on second publish" do
-      setup_unpublished_assignment_with_students
-      @assignment.publish!
-      @assignment.should be_published
-      @assignment.clear_broadcast_messages
-      @assignment.unpublish!
-      @assignment.should be_available
-      @assignment.messages_sent.should be_empty
-      @sub2 = @assignment.grade_student(@stu2, :grade => 8).first
-      @sub2.messages_sent.should be_empty
-      @sub2.update_attributes(:graded_at => Time.now - 60*60)
+  context "grading gpa scale grades" do
+    it "should update grades when assignment changes" do
+      setup_assignment_without_submission
+      @a.update_attributes(:grading_type => 'gpa_scale', :points_possible => 20)
+      @a.context.grading_standards.build({title: "GPA"})
+      gs = @a.context.grading_standards.last
+      gs.data = {"4.0" => 0.94,
+                 "3.7" => 0.90,
+                 "3.3" => 0.87,
+                 "3.0" => 0.84,
+                 "2.7" => 0.80,
+                 "2.3" => 0.77,
+                 "2.0" => 0.74,
+                 "1.7" => 0.70,
+                 "1.3" => 0.67,
+                 "1.0" => 0.64,
+                 "0" => 0.01,
+                 "M" => 0.0 }
+      gs.assignments << @a
+      gs.save!
+      @teacher = @a.context.enroll_user(User.create(:name => "user 1"), 'TeacherEnrollment').user
+      @student = @a.context.enroll_user(User.create(:name => "user 1"), 'StudentEnrollment').user
+      @enrollment = @student.enrollments.first
       @assignment.reload
-      @assignment.publish!
-      @assignment.should be_published
-      @assignment.messages_sent.should_not be_include("Assignment Graded")
-      @assignment.updated_submissions.should_not be_nil
-      @assignment.updated_submissions.should_not be_empty
-      @assignment.updated_submissions.sort_by(&:id).first.messages_sent.should be_empty
-      @assignment.updated_submissions.sort_by(&:id).last.messages_sent.should be_include("Submission Grade Changed")
+      @sub = @assignment.grade_student(@student, :grader => @teacher, :grade => '2.0').first
+      @sub.grade.should eql('2.0')
+      @sub.score.should eql(15.2)
+      @enrollment.reload.computed_current_score.should == 76
+
+      @assignment.points_possible = 30
+      @assignment.save!
+      @sub.reload
+      @sub.score.should eql(15.2)
+      @sub.grade.should eql('0')
+      @enrollment.reload.computed_current_score.should == 50.7
+    end
+
+    it "should accept lowercase gpa grades" do
+      setup_assignment_without_submission
+      @a.update_attributes(:grading_type => 'gpa_scale', :points_possible => 20)
+      @a.context.grading_standards.build({title: "GPA"})
+      gs = @a.context.grading_standards.last
+      gs.data = {"4.0" => 0.94,
+                 "3.7" => 0.90,
+                 "3.3" => 0.87,
+                 "3.0" => 0.84,
+                 "2.7" => 0.80,
+                 "2.3" => 0.77,
+                 "2.0" => 0.74,
+                 "1.7" => 0.70,
+                 "1.3" => 0.67,
+                 "1.0" => 0.64,
+                 "0" => 0.01,
+                 "M" => 0.0 }
+      gs.assignments << @a
+      gs.save!
+      @teacher = @a.context.enroll_user(User.create(:name => "user 1"), 'TeacherEnrollment').user
+      @student = @a.context.enroll_user(User.create(:name => "user 1"), 'StudentEnrollment').user
+      @assignment.reload
+      @sub = @assignment.grade_student(@student, :grader => @teacher, :grade => 'm').first
+      @sub.grade.should eql('M')
+      @sub.score.should eql(0.0)
     end
   end
 
-  context "to_json" do
+  context "as_json" do
     it "should include permissions if specified" do
       assignment_model
       @course.offer!
@@ -1031,7 +1004,7 @@ describe Assignment do
       @assignment.to_json(:permissions => {:user => nil}).should match(/\"permissions\"\s*:\s*\{\}/)
       @assignment.grants_right?(@teacher, nil, :create).should eql(true)
       @assignment.to_json(:permissions => {:user => @teacher, :session => nil}).should match(/\"permissions\"\s*:\s*\{\"/)
-      hash = ActiveSupport::JSON.decode(@assignment.to_json(:permissions => {:user => @teacher, :session => nil}))
+      hash = @assignment.as_json(:permissions => {:user => @teacher, :session => nil})
       hash["assignment"].should_not be_nil
       hash["assignment"]["permissions"].should_not be_nil
       hash["assignment"]["permissions"].should_not be_empty
@@ -1041,7 +1014,7 @@ describe Assignment do
     it "should serialize with roots included in nested elements" do
       course_model
       @course.assignments.create!(:title => "some assignment")
-      hash = ActiveSupport::JSON.decode(@course.to_json(:include => :assignments))
+      hash = @course.as_json(:include => :assignments)
       hash["course"].should_not be_nil
       hash["course"]["assignments"].should_not be_empty
       hash["course"]["assignments"][0].should_not be_nil
@@ -1053,7 +1026,7 @@ describe Assignment do
       @course.offer!
       @enr1 = @course.enroll_teacher(@teacher = user)
       @enr1.accept
-      hash = ActiveSupport::JSON.decode(@course.to_json(:permissions => {:user => @teacher, :session => nil} ))
+      hash = @course.as_json(:permissions => {:user => @teacher, :session => nil} )
       hash["course"].should_not be_nil
       hash["course"]["permissions"].should_not be_nil
       hash["course"]["permissions"].should_not be_empty
@@ -1065,7 +1038,7 @@ describe Assignment do
       @course.offer!
       @enr1 = @course.enroll_teacher(@teacher = user)
       @enr1.accept
-      hash = ActiveSupport::JSON.decode(@course.to_json(:include_root => false, :permissions => {:user => @teacher, :session => nil} ))
+      hash = @course.as_json(:include_root => false, :permissions => {:user => @teacher, :session => nil} )
       hash["course"].should be_nil
       hash["name"].should eql(@course.name)
       hash["permissions"].should_not be_nil
@@ -1075,7 +1048,7 @@ describe Assignment do
 
     it "should include group_category" do
       assignment_model(:group_category => "Something")
-      hash = ActiveSupport::JSON.decode(@assignment.to_json)
+      hash = @assignment.as_json
       hash["assignment"]["group_category"].should == "Something"
     end
   end
@@ -1165,16 +1138,20 @@ describe Assignment do
       </div>}
       assignment_model(:due_at => "Sep 3 2008 12:00am", :description => html)
       ev = @assignment.to_ics(false)
-      ev.description.should == "This assignment is due December 16th. Plz discuss the reading.\n  \n\n\n Test."
-      ev.x_alt_desc.should == html.strip
+      pending("assignment description disabled") do
+        ev.description.should == "This assignment is due December 16th. Plz discuss the reading.\n  \n\n\n Test."
+        ev.x_alt_desc.should == html.strip
+      end
     end
 
     it ".to_ics should run the description through api_user_content to translate links" do
       html = %{<a href="/calendar">Click!</a>}
       assignment_model(:due_at => "Sep 3 2008 12:00am", :description => html)
       ev = @assignment.to_ics(false)
-      ev.description.should == "[Click!](http://localhost/calendar)"
-      ev.x_alt_desc.should == %{<a href="http://localhost/calendar">Click!</a>}
+      pending("assignment description disabled") do
+        ev.description.should == "[Click!](http://localhost/calendar)"
+        ev.x_alt_desc.should == %{<a href="http://localhost/calendar">Click!</a>}
+      end
     end
 
     it ".to_ics should populate uid and summary fields" do
@@ -1182,7 +1159,7 @@ describe Assignment do
       assignment_model(:due_at => "Sep 3 2008 11:55am", :title => "assignment title")
       ev = @a.to_ics(false)
       ev.uid.should == "event-assignment-#{@a.id}"
-      ev.summary.should == "#{@a.title}"
+      ev.summary.should == "#{@a.title} [#{@a.context.course_code}]"
       # TODO: ev.url.should == ?
     end
 
@@ -1197,7 +1174,7 @@ describe Assignment do
       assignment = AssignmentOverrideApplicator.assignment_with_overrides(@a, [@override])
       ev = assignment.to_ics(false)
       ev.uid.should == "event-assignment-override-#{@override.id}"
-      ev.summary.should == "#{@a.title} (#{@override.title})"
+      ev.summary.should == "#{@a.title} (#{@override.title}) [#{assignment.context.course_code}]"
       #TODO: ev.url.should == ?
     end
 
@@ -1212,7 +1189,7 @@ describe Assignment do
       assignment = AssignmentOverrideApplicator.assignment_with_overrides(@a, [@override])
       ev = assignment.to_ics(false)
       ev.uid.should == "event-assignment-#{@a.id}"
-      ev.summary.should == "#{@a.title}"
+      ev.summary.should == "#{@a.title} [#{@a.context.course_code}]"
     end
 
   end
@@ -1253,7 +1230,7 @@ describe Assignment do
       @quiz.assignment_id.should eql(@a.id)
       @a.submission_types = 'on_paper'
       @a.save!
-      @quiz = Quiz.find(@quiz.id)
+      @quiz = Quizzes::Quiz.find(@quiz.id)
       @quiz.assignment_id.should eql(nil)
       @quiz.state.should eql(:deleted)
       @a.reload
@@ -1278,7 +1255,7 @@ describe Assignment do
       @a.reload
       @a.quiz.should be_nil
       @a.state.should eql(:published)
-      @quiz = Quiz.find(@quiz.id)
+      @quiz = Quizzes::Quiz.find(@quiz.id)
       @quiz.assignment_id.should eql(nil)
       @quiz.state.should eql(:created)
     end
@@ -1300,6 +1277,17 @@ describe Assignment do
       @a.state.should eql(:published)
       @quiz.reload
       @quiz.state.should eql(:created)
+    end
+
+    it "updates the draft state of its associated quiz" do
+      assignment_model(:course => @course, :submission_types => "online_quiz")
+      Account.default.enable_feature!(:draft_state)
+      @a.reload
+      @a.publish
+      @a.save!
+      @a.quiz.reload.should be_published
+      @a.unpublish
+      @a.quiz.reload.should_not be_published
     end
 
     it "should create a discussion_topic if none exists and specified" do
@@ -1381,14 +1369,6 @@ describe Assignment do
       @topic.reload
       @topic.state.should eql(:active)
     end
-
-    it "should clear the lock_at date when converted to a graded topic" do
-      assignment_model
-      @a.lock_at = 10.days.from_now
-      @a.submission_types = "discussion_topic"
-      @a.save!
-      @a.lock_at.should be_nil
-    end
   end
 
   context "broadcast policy" do
@@ -1420,96 +1400,54 @@ describe Assignment do
     end
 
     context "assignment graded" do
-      before { setup_unpublished_assignment_with_students }
+      before { setup_assignment_with_students }
 
-      describe 'when its been published' do
-        before { @assignment.publish! }
+      specify { @assignment.should be_published }
 
-        specify { @assignment.should be_published }
+      it "should notify students when their grade is changed" do
+        @sub2 = @assignment.grade_student(@stu2, :grade => 8).first
+        @sub2.messages_sent.should_not be_empty
+        @sub2.messages_sent['Submission Graded'].should_not be_nil
+        @sub2.messages_sent['Submission Grade Changed'].should be_nil
+        @sub2.update_attributes(:graded_at => Time.now - 60*60)
+        @sub2 = @assignment.grade_student(@stu2, :grade => 9).first
+        @sub2.messages_sent.should_not be_empty
+        @sub2.messages_sent['Submission Graded'].should be_nil
+        @sub2.messages_sent['Submission Grade Changed'].should_not be_nil
+      end
 
-        it "should notify students when their grade is changed" do
+      it "should notify affected students on a mass-grade change" do
+        pending "CNVS-5969 - Setting a default grade should send a 'Submission Graded' notification"
+        @assignment.set_default_grade(:default_grade => 10)
+        msg_sub1 = @assignment.submissions.detect{|s| s.id = @sub1.id}
+        msg_sub1.messages_sent.should_not be_nil
+        msg_sub1.messages_sent['Submission Grade Changed'].should_not be_nil
+        msg_sub2 = @assignment.submissions.detect{|s| s.id = @sub2.id}
+        msg_sub2.messages_sent.should_not be_nil
+        msg_sub2.messages_sent['Submission Graded'].should_not be_nil
+      end
+
+      describe 'while they are muted' do
+        before { @assignment.mute! }
+
+        specify { @assignment.should be_muted }
+
+        it "should not notify affected students on a mass-grade change if muted" do
+          pending "CNVS-5969 - Setting a default grade should send a 'Submission Graded' notification"
+          @assignment.set_default_grade(:default_grade => 10)
+          @assignment.messages_sent.should be_empty
+        end
+
+        it "should not notify students when their grade is changed if muted" do
           @sub2 = @assignment.grade_student(@stu2, :grade => 8).first
-          @sub2.messages_sent.should_not be_empty
-          @sub2.messages_sent['Submission Graded'].should_not be_nil
-          @sub2.messages_sent['Submission Grade Changed'].should be_nil
           @sub2.update_attributes(:graded_at => Time.now - 60*60)
           @sub2 = @assignment.grade_student(@stu2, :grade => 9).first
-          @sub2.messages_sent.should_not be_empty
-          @sub2.messages_sent['Submission Graded'].should be_nil
-          @sub2.messages_sent['Submission Grade Changed'].should_not be_nil
+          @sub2.messages_sent.should be_empty
         end
-
-
-        it "should notify affected students on a mass-grade change" do
-          @assignment.set_default_grade(:default_grade => 10)
-          @assignment.messages_sent.should_not be_nil
-          @assignment.messages_sent['Assignment Graded'].should_not be_nil
-        end
-
-
-        describe 'and then muted' do
-          before { @assignment.mute! }
-
-          specify { @assignment.should be_muted }
-
-          it "should not notify affected students on a mass-grade change if muted" do
-            @assignment.set_default_grade(:default_grade => 10)
-            @assignment.messages_sent.should be_empty
-          end
-
-          it "should not notify students when their grade is changed if muted" do
-            @sub2 = @assignment.grade_student(@stu2, :grade => 8).first
-            @sub2.update_attributes(:graded_at => Time.now - 60*60)
-            @sub2 = @assignment.grade_student(@stu2, :grade => 9).first
-            @sub2.messages_sent.should be_empty
-          end
-        end
-
-        describe 'and then unpublished' do
-          before { @assignment.unpublish! }
-
-          specify { @assignment.should be_available }
-
-          it "should not notify students of grade changes if unpublished" do
-            @sub2 = @assignment.grade_student(@stu2, :grade => 8).first
-            @sub2.messages_sent.should be_empty
-            @sub2.update_attributes(:graded_at => Time.now - 60*60)
-            @sub2 = @assignment.grade_student(@stu2, :grade => 9).first
-            @sub2.messages_sent.should be_empty
-          end
-
-          it "should notify affected students of a grade change when the assignment is republished" do
-            @sub2 = @assignment.grade_student(@stu2, :grade => 8).first
-            @sub2.messages_sent.should be_empty
-            @sub2.update_attributes(:graded_at => Time.now - 60*60)
-            @assignment.reload
-            @assignment.publish!
-            @subs = @assignment.updated_submissions
-            @subs.should_not be_nil
-            @subs.should_not be_empty
-            @sub = @subs.detect{|s| s.user_id == @stu2.id }
-            @sub.messages_sent.should_not be_nil
-            @sub.messages_sent['Submission Grade Changed'].should_not be_nil
-            @sub = @subs.detect{|s| s.user_id != @stu2.id }
-            @sub.messages_sent.should_not be_nil
-            @sub.messages_sent['Submission Grade Changed'].should be_nil
-          end
-
-          it "should not notify unaffected students of a grade change when the assignment is republished" do
-            @assignment.publish!
-            @subs = @assignment.updated_submissions
-            @subs.should_not be_nil
-            @sub = @subs.first
-            @sub.messages_sent.should_not be_nil
-            @sub.messages_sent['Submission Grade Changed'].should be_nil
-          end
-        end
-
       end
 
       it "should include re-submitted submissions in the list of submissions needing grading" do
         @enr1.accept!
-        @assignment.publish!
         @assignment.should be_published
         @assignment.submissions.size.should == 1
         Assignment.need_grading_info(15).find_by_id(@assignment.id).should be_nil
@@ -1550,46 +1488,21 @@ describe Assignment do
         @a.save
         @a.messages_sent.should be_empty
       end
-
-      # it "should NOT create a message when the content changes to an empty string" do
-        # Notification.create(:name => 'Assignment Changed')
-        # assignment_model(:name => 'Assignment with unstable due date')
-        # @a.context.offer!
-        # @a.description = ""
-        # @a.created_at = Date.new
-        # @a.save!
-        # @a.messages_sent.should_not be_include('Assignment Changed')
-      # end
     end
 
     context "assignment created" do
-      # it "should create a message when an assigment is added to a course in process" do
-      #   Notification.create(:name => 'Assignment Created')
-      #   @course = Course.create
-      #   @course.offer
-      #   assignment_model(:context => @course)
-      #   require 'rubygems'
-      #   require 'ruby-debug'
-      #   @a.messages_sent.should be_include('Assignment Created')
-      # end
-    end
+      it "should create a message when an assigment is added to a course in process" do
+        Notification.create(:name => 'Assignment Created')
+        course_with_teacher(:active_all => true)
+        assignment_model(:context => @course)
+        @a.messages_sent.should be_include('Assignment Created')
+      end
 
-    context "assignment graded" do
-      it "should create a message when an assignment is published" do
-        setup_assignment
-        Notification.create(:name => 'Assignment Graded')
-        @user = User.create
-        assignment_model
-        @a.unpublish!
-        @a.context.offer!
-        @c.enroll_student(@user)
-#        @students = [@user]
-#        @a.stubs(:participants).returns(@students)
-#        @a.participants.should be_include(@user)
-        @a.previously_published = false
-        @a.save
-        @a.publish!
-        @a.messages_sent.should be_include('Assignment Graded')
+      it "should not create a message in an unpublished course" do
+        Notification.create(:name => 'Assignment Created')
+        course_with_teacher(:active_user => true)
+        assignment_model(:context => @course)
+        @a.messages_sent.should_not be_include('Assignment Created')
       end
     end
 
@@ -1749,6 +1662,7 @@ describe Assignment do
       subs.map(&:submission_type).uniq.should eql(['online_text_entry'])
       subs.map(&:body).uniq.should eql(['Some text for you'])
     end
+
     it "should submit the homework for all students in the group if grading them individually" do
       setup_assignment_with_group
       @a.update_attribute(:grade_group_students_individually, true)
@@ -1760,6 +1674,7 @@ describe Assignment do
       submissions.map(&:submission_type).uniq.should eql ["online_text_entry"]
       submissions.map(&:body).uniq.should eql ["Test submission"]
     end
+
     it "should update submission for all students in the same group" do
       setup_assignment_with_group
       res = @a.grade_student(@u1, :grade => "10")
@@ -1769,6 +1684,7 @@ describe Assignment do
       res.map{|s| s.user}.should be_include(@u1)
       res.map{|s| s.user}.should be_include(@u2)
     end
+
     it "should create an initial submission comment for only the submitter by default" do
       setup_assignment_with_group
       sub = @a.submit_homework(@u1, :submission_type => "online_text_entry", :body => "Some text for you", :comment => "hey teacher, i hate my group. i did this entire project by myself :(")
@@ -1778,6 +1694,7 @@ describe Assignment do
       other_sub = (@a.submissions - [sub])[0]
       other_sub.submission_comments.size.should eql 0
     end
+
     it "should add a submission comment for only the specified user by default" do
       setup_assignment_with_group
       res = @a.grade_student(@u1, :comment => "woot")
@@ -1787,6 +1704,7 @@ describe Assignment do
       res.find{|s| s.user == @u1}.submission_comments.should_not be_empty
       res.find{|s| s.user == @u2}.should be_nil #.submission_comments.should be_empty
     end
+
     it "should update submission for only the individual student if set thay way" do
       setup_assignment_with_group
       @a.update_attribute(:grade_group_students_individually, true)
@@ -1796,6 +1714,7 @@ describe Assignment do
       res.length.should eql(1)
       res[0].user.should eql(@u1)
     end
+
     it "should create an initial submission comment for all group members if specified" do
       setup_assignment_with_group
       sub = @a.submit_homework(@u1, :submission_type => "online_text_entry", :body => "Some text for you", :comment => "ohai teacher, we had so much fun working together", :group_comment => "1")
@@ -1805,6 +1724,7 @@ describe Assignment do
       other_sub = (@a.submissions - [sub])[0]
       other_sub.submission_comments.size.should eql 1
     end
+
     it "should add a submission comment for all group members if specified" do
       setup_assignment_with_group
       res = @a.grade_student(@u1, :comment => "woot", :group_comment => "1")
@@ -1820,6 +1740,7 @@ describe Assignment do
       group_comment_id.should be_present
       comments.all? { |c| c.group_comment_id == group_comment_id }.should be_true
     end
+
     it "return the single submission if the user is not in a group" do
       setup_assignment_with_group
       res = @a.grade_student(@u3, :comment => "woot", :group_comment => "1")
@@ -1829,6 +1750,18 @@ describe Assignment do
       comments = res.find{|s| s.user == @u3}.submission_comments
       comments.size.should == 1
       comments[0].group_comment_id.should be_nil
+    end
+
+    it "associates attachments with all submissions" do
+      setup_assignment_with_group
+      @a.update_attribute :submission_types, "online_upload"
+      f = @u1.attachments.create! uploaded_data: StringIO.new('blah'),
+        context: @u1,
+        filename: 'blah.txt'
+      @a.submit_homework(@u1, attachments: [f])
+      @a.submissions.reload.each { |s|
+        s.attachments.should == [f]
+      }
     end
   end
 
@@ -1845,24 +1778,11 @@ describe Assignment do
     it "should serialize permissions" do
       course_with_teacher(:active_all => true)
       @assignment = @course.assignments.create!(:title => "some assignment")
-      data = ActiveSupport::JSON.decode(@assignment.to_json(:permissions => {:user => @user, :session => nil})) rescue nil
+      data = @assignment.as_json(:permissions => {:user => @user, :session => nil}) rescue nil
       data.should_not be_nil
       data['assignment'].should_not be_nil
       data['assignment']['permissions'].should_not be_nil
       data['assignment']['permissions'].should_not be_empty
-    end
-  end
-
-  context "clone_for" do
-    it "should clone for another course" do
-      course_with_teacher
-      @assignment = @course.assignments.create!(:title => "some assignment")
-      @assignment.update_attribute(:needs_grading_count, 5)
-      course
-      @new_assignment = @assignment.clone_for(@course)
-      @new_assignment.context.should_not eql(@assignment.context)
-      @new_assignment.title.should eql(@assignment.title)
-      @new_assignment.needs_grading_count.should == 0
     end
   end
 
@@ -1885,6 +1805,38 @@ describe Assignment do
       ct.context_module_id = m.id
       ct.context_code = "course_#{@course.id}"
       ct.save!
+
+      m.unlock_at = Time.now.in_time_zone + 1.day
+      m.save
+      a1.reload
+      a1.locked_for?(@user).should be_true
+    end
+
+    it "should be locked when associated discussion topic is part of a locked module" do
+      course :active_all => true
+      student_in_course
+      a1 = assignment_model(:course => @course, :submission_types => "discussion_topic")
+      a1.reload
+      a1.locked_for?(@user).should be_false
+
+      m = @course.context_modules.create!
+      m.add_item(:id => a1.discussion_topic.id, :type => 'discussion_topic')
+
+      m.unlock_at = Time.now.in_time_zone + 1.day
+      m.save
+      a1.reload
+      a1.locked_for?(@user).should be_true
+    end
+
+    it "should be locked when associated quiz is part of a locked module" do
+      course :active_all => true
+      student_in_course
+      a1 = assignment_model(:course => @course, :submission_types => "online_quiz")
+      a1.reload
+      a1.locked_for?(@user).should be_false
+
+      m = @course.context_modules.create!
+      m.add_item(:id => a1.quiz.id, :type => 'quiz')
 
       m.unlock_at = Time.now.in_time_zone + 1.day
       m.save
@@ -1929,6 +1881,27 @@ describe Assignment do
       result = @assignment.reload.group_students(@student1)
       result.first.should == @group1
       result.last.map{ |u| u.id }.sort.should == [@student1, @student2].map{ |u| u.id }.sort
+    end
+
+    it "returns distinct users" do
+      s1, s2 = n_students_in_course(2)
+
+      section = @course.course_sections.create! name: "some section"
+      e = @course.enroll_user s1, 'StudentEnrollment',
+                              section: section,
+                              allow_multiple_enrollments: true
+      e.update_attribute :workflow_state, 'active'
+
+      gc = @course.group_categories.create! name: "Homework Groups"
+      group = gc.groups.create! name: "Group 1", context: @course
+      group.add_user(s1)
+      group.add_user(s2)
+
+      a = @course.assignments.create! name: "Group Assignment",
+                                      group_category_id: gc.id
+      g, students = a.group_students(s1)
+      g.should == group
+      students.sort_by(&:id).should == [s1, s2]
     end
   end
 
@@ -1976,7 +1949,8 @@ describe Assignment do
         :exclude_biblio => '1',
         :exclude_quoted => '0',
         :exclude_type => '0',
-        :exclude_value => ''
+        :exclude_value => '',
+        :s_view_report => '1'
       })
     end
 
@@ -2042,24 +2016,20 @@ describe Assignment do
     end
 
     it "should mark comments as hidden for submission zip uploads" do
-      create_and_submit
-      @assignment.muted = true
-      @assignment.save!
+      course_with_teacher
+      student_in_course
 
-      temp = Tempfile.new('sub.txt')
+      @assignment = @course.assignments.create! name: "Mute Comment Test",
+                                                submission_types: %w(online_upload)
+      @assignment.update_attribute :muted, true
+      submit_homework(@student)
 
-      group = {:user => @user, :submission => @submission, :display_name => 'sub.txt', :filename => temp.path}
+      zip = zip_submissions
 
-      fake = mock()
-      fake.stubs(:map).returns([])
-      fake.stubs(:unzip_files).returns(fake)
-      ZipExtractor.stubs(:new).returns(fake)
-      @assignment.stubs(:partition_for_user).returns([[group]])
+      @assignment.generate_comments_from_files(zip.open.path, @user)
 
-      @assignment.generate_comments_from_files(temp.path, @user)
-
-      @submission.reload
-      @submission.submission_comments.last.hidden.should == true
+      submission = @assignment.submission_for_student(@student)
+      submission.submission_comments.last.hidden.should == true
     end
   end
 
@@ -2137,10 +2107,6 @@ describe Assignment do
         @asmnt.frozen_for_user?(nil).should == true
       end
 
-      it "is not frozen for teacher when some attributes are not frozen" do
-        @asmnt.frozen_for_user?(@teacher).should == false
-      end
-
       it "should not be frozen for admin" do
         @asmnt.frozen_for_user?(@admin).should == false
       end
@@ -2149,7 +2115,7 @@ describe Assignment do
         @asmnt.description = "new description"
         @asmnt.save
         @asmnt.valid?.should == false
-        @asmnt.errors["description"].should == "You don't have permission to edit the locked attribute description"
+        @asmnt.errors["description"].should == ["You don't have permission to edit the locked attribute description"]
       end
 
       it "should allow teacher to edit unlocked attributes" do
@@ -2167,7 +2133,7 @@ describe Assignment do
         @asmnt.save
 
         @asmnt.valid?.should == false
-        @asmnt.errors["description"].should == "You don't have permission to edit the locked attribute description"
+        @asmnt.errors["description"].should == ["You don't have permission to edit the locked attribute description"]
 
         @asmnt.reload
         @asmnt.description.should_not == "new title"
@@ -2186,7 +2152,7 @@ describe Assignment do
 
   end
 
-  context "not_locked named_scope" do
+  context "not_locked scope" do
     before :each do
       course_with_student_logged_in(:active_all => true)
       assignment_quiz([], :course => @course, :user => @user)
@@ -2320,6 +2286,164 @@ describe Assignment do
         submission[:late].should == user.submissions.first.late?
       end
     end
+
+    it "should include inline view pingback url for files" do
+      course_with_teacher :active_all => true
+      student_in_course :active_all => true
+      assignment = @course.assignments.create! :submission_types => ['online_upload']
+      attachment = @student.attachments.create! :uploaded_data => dummy_io, :filename => 'doc.doc', :display_name => 'doc.doc', :context => @student
+      submission = assignment.submit_homework @student, :submission_type => :online_upload, :attachments => [attachment]
+      json = assignment.speed_grader_json @teacher
+      attachment_json = json['submissions'][0]['submission_history'][0]['submission']['versioned_attachments'][0]['attachment']
+      attachment_json['view_inline_ping_url'].should match %r{/users/#{@student.id}/files/#{attachment.id}/inline_view\z}
+    end
+
+    context "group assignments" do
+      before do
+        course_with_teacher active_all: true
+        gc = @course.group_categories.create! name: "Assignment Groups"
+        @groups = 2.times.map { |i| gc.groups.create! name: "Group #{i}", context: @course }
+        students = 4.times.map { student_in_course(active_all: true); @student }
+        students.each_with_index { |s, i| @groups[i % @groups.size].add_user(s) }
+        @assignment = @course.assignments.create!(
+          group_category_id: gc.id,
+          grade_group_students_individually: false,
+          submission_types: %w(text_entry)
+        )
+      end
+
+      it "should not be in group mode for non-group assignments" do
+        setup_assignment_with_homework
+        json = @assignment.speed_grader_json(@teacher)
+        json["GROUP_GRADING_MODE"].should_not be_true
+      end
+
+      it 'returns "groups" instead of students' do
+        json = @assignment.speed_grader_json(@teacher)
+        @groups.each do |group|
+          j = json["context"]["students"].find { |g| g["name"] == group.name }
+          group.users.map(&:id).should include j["id"]
+        end
+        json["GROUP_GRADING_MODE"].should be_true
+      end
+
+      it 'chooses the student with turnitin data to represent' do
+        turnitin_submissions = @groups.map do |group|
+          rep = group.users.shuffle.first
+          turnitin_submission, *others = @assignment.grade_student(rep, grade: 10)
+          turnitin_submission.update_attribute :turnitin_data, {blah: 1}
+          turnitin_submission
+        end
+
+        @assignment.update_attribute :turnitin_enabled, true
+        json = @assignment.speed_grader_json(@teacher)
+
+        json["submissions"].map { |s|
+          s["id"]
+        }.sort.should == turnitin_submissions.map(&:id).sort
+      end
+
+      it 'prefers people with submissions' do
+        g1, _ = @groups
+        @assignment.grade_student(g1.users.first, score: 10)
+        g1rep = g1.users.shuffle.first
+        s = @assignment.submission_for_student(g1rep)
+        s.update_attribute :submission_type, 'online_upload'
+        @assignment.representatives(@teacher).should include g1rep
+      end
+    end
+
+    it "works for quizzes without quiz_submissions" do
+      course_with_teacher(:active_all => true)
+      student_in_course
+      quiz = @course.quizzes.create! :title => "Final",
+                                     :quiz_type => "assignment"
+      quiz.did_edit
+      quiz.offer
+
+      assignment = quiz.assignment
+      assignment.grade_student(@student, grade: 1)
+      json = assignment.speed_grader_json(@teacher)
+      json[:submissions].all? { |s|
+        s.has_key? 'submission_history'
+      }.should be_true
+    end
+
+    it "doesn't include quiz_submissions when there are too many attempts" do
+      course_with_teacher :active_all => true
+      student_in_course
+      quiz_with_graded_submission [], :course => @course, :user => @student
+      Setting.set('too_many_quiz_submission_versions', 3)
+      3.times {
+        @quiz_submission.versions.create!
+      }
+      json = @quiz.assignment.speed_grader_json(@teacher)
+      json[:submissions].all? { |s| s["submission_history"].size.should == 1 }
+    end
+
+    it "returns quiz lateness correctly" do
+      course_with_teacher(:active_all => true)
+      student_in_course
+      quiz_with_graded_submission([], { :course => @course, :user => @student })
+      @quiz.time_limit = 10
+      @quiz.save!
+
+      json = @assignment.speed_grader_json(@teacher)
+      json[:submissions].first['submission_history'].first[:submission]['late'].should be_false
+
+      @quiz.due_at = 1.day.ago
+      @quiz.save!
+
+      json = @assignment.speed_grader_json(@teacher)
+      json[:submissions].first['submission_history'].first[:submission]['late'].should be_true
+    end
+
+    it "returns quiz history for records before and after namespace change" do
+      course_with_teacher(:active_all => true)
+      student_in_course
+      quiz_with_graded_submission([], { :course => @course, :user => @student })
+      @quiz.save!
+
+      json = @assignment.speed_grader_json(@teacher)
+      json[:submissions].first['submission_history'].size.should == 1
+
+      Version.update_all("versionable_type = 'QuizSubmission'", "versionable_type = 'Quizzes::QuizSubmission'")
+      json = @assignment.reload.speed_grader_json(@teacher)
+      json[:submissions].first['submission_history'].size.should == 1
+    end
+  end
+
+  describe "#too_many_qs_versions" do
+    it "returns if there are too many versions to load at once" do
+      course_with_teacher :active_all => true
+      student_in_course
+      quiz_with_graded_submission [], :course => @course, :user => @student
+      submissions = @quiz.assignment.submissions
+
+      Setting.set('too_many_quiz_submission_versions', 3)
+      1.times { @quiz_submission.versions.create! }
+      @quiz.assignment.too_many_qs_versions?(submissions).should be_false
+
+      2.times { @quiz_submission.versions.create! }
+      @quiz.reload.assignment.too_many_qs_versions?(submissions).should be_true
+    end
+  end
+
+  describe "#quiz_submission_versions" do
+    it "finds quiz submission versions for submissions" do
+      course_with_teacher(:active_all => true)
+      student_in_course
+      quiz_with_graded_submission([], { :course => @course, :user => @student })
+      @quiz.save!
+
+      assignment  = @quiz.assignment
+      submissions = assignment.submissions
+      too_many    = assignment.too_many_qs_versions?(submissions)
+
+      versions = assignment.quiz_submission_versions(submissions, too_many)
+
+      versions[@quiz_submission.id].size.should == 1
+    end
   end
 
   describe "update_student_submissions" do
@@ -2437,18 +2561,39 @@ describe Assignment do
     end
   end
 
-  describe "recompute_submission_lateness" do
-    it "is called in a delayed job when due_at changes" do
-      assignment = assignment_model
-      assignment.due_at = 1.week.from_now
-      assignment.expects(:send_later_if_production).with(:recompute_submission_lateness)
-      assignment.save
+  describe "updating cached due dates" do
+    before do
+      @assignment = assignment_model
+      @assignment.due_at = 2.weeks.from_now
+      @assignment.save
     end
 
-    it "is not called when due_at doesn't change" do
-      assignment = assignment_model
-      assignment.expects(:send_later_if_production).with(:recompute_submission_lateness).never
-      assignment.save
+    it "triggers when assignment is created" do
+      new_assignment = @course.assignments.build
+      DueDateCacher.expects(:recompute).with(new_assignment)
+      new_assignment.save
+    end
+
+    it "triggers when due_at changes" do
+      DueDateCacher.expects(:recompute).with(@assignment)
+      @assignment.due_at = 1.week.from_now
+      @assignment.save
+    end
+
+    it "triggers when due_at changes to nil" do
+      DueDateCacher.expects(:recompute).with(@assignment)
+      @assignment.due_at = nil
+      @assignment.save
+    end
+
+    it "triggers when assignment deleted" do
+      DueDateCacher.expects(:recompute).with(@assignment)
+      @assignment.destroy
+    end
+
+    it "does not trigger when nothing changed" do
+      DueDateCacher.expects(:recompute).never
+      @assignment.save
     end
   end
 
@@ -2474,6 +2619,199 @@ describe Assignment do
     it "should leave short titles alone" do
       @assignment.title = 'short title'
       @assignment.title_slug.should == @assignment.title
+    end
+  end
+
+  describe "external_tool_tag" do
+    it "should update the existing tag when updating the assignment" do
+      course
+      a = @course.assignments.create!(title: "test",
+                                      submission_types: 'external_tool',
+                                      external_tool_tag_attributes: {url: "http://example.com/launch"})
+      tag = a.external_tool_tag
+      tag.should_not be_new_record
+
+      a = Assignment.find(a.id)
+      a.attributes = {external_tool_tag_attributes: {url: "http://example.com/launch2"}}
+      a.save!
+      a.external_tool_tag.url.should == "http://example.com/launch2"
+      a.external_tool_tag.should == tag
+    end
+  end
+
+  describe "allowed_extensions=" do
+    it "should accept a string as input" do
+      a = Assignment.new
+      a.allowed_extensions = "doc,xls,txt"
+      a.allowed_extensions.should == ["doc", "xls", "txt"]
+    end
+
+    it "should accept an array as input" do
+      a = Assignment.new
+      a.allowed_extensions = ["doc", "xls", "txt"]
+      a.allowed_extensions.should == ["doc", "xls", "txt"]
+    end
+
+    it "should sanitize the string" do
+      a = Assignment.new
+      a.allowed_extensions = ".DOC, .XLS, .TXT"
+      a.allowed_extensions.should == ["doc", "xls", "txt"]
+    end
+
+    it "should sanitize the array" do
+      a = Assignment.new
+      a.allowed_extensions = [".DOC", " .XLS", " .TXT"]
+      a.allowed_extensions.should == ["doc", "xls", "txt"]
+    end
+  end
+
+  describe '#generate_comments_from_files' do
+    before do
+      course_with_teacher
+      @students = 3.times.map { student_in_course; @student }
+
+      @assignment = @course.assignments.create! :name => "zip upload test",
+                                                :submission_types => %w(online_upload)
+    end
+
+    it "should work for individuals" do
+      s1 = @students.first
+      submit_homework(s1)
+
+      zip = zip_submissions
+
+      comments, ignored = @assignment.generate_comments_from_files(
+        zip.open.path,
+        @teacher)
+
+      comments.map { |g| g.map { |c| c.submission.user } }.should == [[s1]]
+      ignored.should be_empty
+    end
+
+    it "should work for groups" do
+      s1, s2 = @students
+
+      gc = @course.group_categories.create! name: "Homework Groups"
+      @assignment.update_attributes group_category_id: gc.id,
+                                    grade_group_students_individually: false
+      g1, g2 = 2.times.map { |i| gc.groups.create! name: "Group #{i}", context: @course }
+      g1.add_user(s1)
+      g1.add_user(s2)
+
+      submit_homework(s1)
+      zip = zip_submissions
+
+      comments, _ = @assignment.generate_comments_from_files(
+        zip.open.path,
+        @teacher)
+
+      comments.map { |g|
+        g.map { |c| c.submission.user }.sort_by(&:id)
+      }.should == [[s1, s2]]
+    end
+  end
+
+  describe "#restore" do
+    it "should restore assignments with draft state disabled" do
+      course
+      assignment_model course: @course
+      @a.destroy
+      @a.restore
+      @a.reload.should be_published
+    end
+
+    it "should restore to unpublished if draft state w/ no submissions" do
+      course(draft_state: true)
+      assignment_model course: @course
+      @a.context.root_account.enable_feature!(:draft_state)
+      @a.destroy
+      @a.restore
+      @a.reload.should be_unpublished
+    end
+
+    it "should restore to published if draft state w/ submissions" do
+      course(draft_state: true)
+      setup_assignment_with_homework
+      @assignment.context.root_account.enable_feature!(:draft_state)
+      @assignment.destroy
+      @assignment.restore
+      @assignment.reload.should be_published
+    end
+  end
+
+  describe '#readable_submission_type' do
+    it "should work for on paper assignments" do
+      assignment_model(:submission_types => 'on_paper')
+      @assignment.readable_submission_types.should == 'on paper'
+    end
+  end
+
+  describe '#update_grades_if_details_changed' do
+    before do
+      assignment_model
+    end
+
+    it "should update grades if points_possible changes" do
+      @assignment.context.expects(:recompute_student_scores).once
+      @assignment.points_possible = 3
+      @assignment.save!
+    end
+
+    it "should update grades if muted changes" do
+      @assignment.context.expects(:recompute_student_scores).once
+      @assignment.muted = true
+      @assignment.save!
+    end
+
+    it "should update grades if workflow_state changes" do
+      @assignment.context.expects(:recompute_student_scores).once
+      @assignment.unpublish
+    end
+
+    it "should not update grades otherwise" do
+      @assignment.context.expects(:recompute_student_scores).never
+      @assignment.title = 'hi'
+      @assignment.due_at = 1.hour.ago
+      @assignment.description = 'blah'
+      @assignment.save!
+    end
+  end
+
+  describe "group category validation" do
+    before do
+      student_in_course active_all: true
+      @group_category = @course.group_categories.create! name: "groups"
+      @groups = 2.times.map { |i|
+        @group_category.groups.create! name: "group #{i}", context: @course
+      }
+    end
+
+    def assignment(group_category = nil)
+      a = @course.assignments.build name: "test"
+      a.group_category = group_category
+      a.tap &:save!
+    end
+
+    it "lets you change group category attributes before homework is submitted" do
+      a1 = assignment
+      a1.group_category = @group_category
+      a1.should be_valid
+
+      a2 = assignment(@group_category)
+      a2.group_category = nil
+      a2.should be_valid
+    end
+
+    it "doesn't let you change group category attributes after homework is submitted" do
+      a1 = assignment
+      a1.submit_homework @student, body: "hello, world"
+      a1.group_category = @group_category
+      a1.should_not be_valid
+
+      a2 = assignment(@group_category)
+      a2.submit_homework @student, body: "hello, world"
+      a2.group_category = nil
+      a2.should_not be_valid
     end
   end
 end
@@ -2507,16 +2845,14 @@ def setup_assignment_with_homework
   @assignment.reload
 end
 
-def setup_unpublished_assignment_with_students
-  Notification.create!(:name => "Assignment Graded")
-  Notification.create!(:name => "Submission Graded")
-  Notification.create!(:name => "Submission Grade Changed")
-  course_model(:publish_grades_immediately => false)
+def setup_assignment_with_students
+  @graded_notify = Notification.create!(:name => "Submission Graded")
+  @grade_change_notify = Notification.create!(:name => "Submission Grade Changed")
+  course_model
   @course.offer!
   @enr1 = @course.enroll_student(@stu1 = user)
   @enr2 = @course.enroll_student(@stu2 = user)
   @assignment = @course.assignments.create(:title => "asdf", :points_possible => 10)
-  @assignment.should_not be_published
   @sub1 = @assignment.grade_student(@stu1, :grade => 9).first
   @sub1.score.should == 9
   # Took this out until it is asked for
@@ -2531,3 +2867,24 @@ def setup_assignment
   @c = course_model(:workflow_state => "available")
   @c.enroll_student(@u)
 end
+
+def submit_homework(student)
+  a = Attachment.create! context: student,
+                         filename: "homework.pdf",
+                         uploaded_data: StringIO.new("blah blah blah")
+  @assignment.submit_homework(student, attachments: [a],
+                                       submission_type: "online_upload")
+  a
+end
+
+def zip_submissions
+  zip = Attachment.new filename: 'submissions.zip'
+  zip.user = @teacher
+  zip.workflow_state = 'to_be_zipped'
+  zip.context = @assignment
+  zip.save!
+  ContentZipper.process_attachment(zip, @teacher)
+  raise "zip failed" if zip.workflow_state != "zipped"
+  zip
+end
+

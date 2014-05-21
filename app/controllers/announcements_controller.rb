@@ -29,7 +29,7 @@ class AnnouncementsController < ApplicationController
       respond_to do |format|
         format.html do
           add_crumb(t(:announcements_crumb, "Announcements"))
-          can_create = @context.announcements.new.grants_right?(@current_user, session, :create)
+          can_create = @context.announcements.scoped.new.grants_right?(@current_user, session, :create)
           js_env :permissions => {
             :create => can_create,
             :moderate => can_create
@@ -47,7 +47,7 @@ class AnnouncementsController < ApplicationController
 
   def public_feed
     return unless get_feed_context
-    announcements = @context.announcements.active.find(:all, :order => 'posted_at DESC', :limit => 15).reject{|a| a.locked_for?(@current_user, :check_policies => true) }
+    announcements = @context.announcements.active.order(:posted_at).limit(15).reject{|a| a.locked_for?(@current_user, :check_policies => true) }
     respond_to do |format|
       format.atom {
         feed = Atom::Feed.new do |f|

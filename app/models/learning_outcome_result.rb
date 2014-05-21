@@ -17,17 +17,22 @@
 #
 
 class LearningOutcomeResult < ActiveRecord::Base
+  include PolymorphicTypeOverride
+  override_polymorphic_types association_type: {'Quiz' => 'Quizzes::Quiz'},
+                             associated_asset_type: {'Quiz' => 'Quizzes::Quiz'},
+                             artifact_type: {'QuizSubmission' => 'Quizzes::QuizSubmission'}
+
   belongs_to :user
   belongs_to :learning_outcome
   belongs_to :alignment, :class_name => 'ContentTag', :foreign_key => :content_tag_id
-  belongs_to :association, :polymorphic => true
+  belongs_to :association_object, :polymorphic => true, :foreign_type => :association_type, :foreign_key => :association_id
   belongs_to :artifact, :polymorphic => true
   belongs_to :associated_asset, :polymorphic => true
   belongs_to :context, :polymorphic => true
   simply_versioned
   before_save :infer_defaults
 
-  attr_accessible :learning_outcome, :user, :association, :alignment, :associated_asset
+  attr_accessible :learning_outcome, :user, :association_object, :alignment, :associated_asset
   
   def infer_defaults
     self.learning_outcome_id = self.alignment.learning_outcome_id
@@ -41,21 +46,15 @@ class LearningOutcomeResult < ActiveRecord::Base
   end
   
   def assignment
-    if self.association.is_a?(Assignment)
-      self.association
+    if self.association_object.is_a?(Assignment)
+      self.association_object
     elsif self.artifact.is_a?(RubricAssessment)
-      self.artifact.rubric_association.association
+      self.artifact.rubric_association.association_object
     else
       nil
     end
   end
-  
-  def changes_worth_versioning?
-    !(self.changes.keys - [
-      "updated_at",
-    ]).empty?
-  end
-  
+
   def save_to_version(attempt)
     current_version = self.versions.current.try(:model)
     if current_version.try(:attempt) && attempt < current_version.attempt
@@ -79,37 +78,25 @@ class LearningOutcomeResult < ActiveRecord::Base
     end
   end
   
-  named_scope :for_context_codes, lambda{|codes| 
+  scope :for_context_codes, lambda { |codes|
     if codes == 'all'
-      {}
+      scoped
     else
-      {:conditions => {:context_code => Array(codes)} }
+      where(:context_code => codes)
     end
   }
-  named_scope :for_user, lambda{|user|
-    {:conditions => {:user_id => user.id} }
-  }
-  named_scope :custom_ordering, lambda{|param|
+  scope :for_user, lambda { |user| where(:user_id => user) }
+  scope :custom_ordering, lambda { |param|
     orders = {
       'recent' => "assessed_at DESC",
       'highest' => "score DESC",
       'oldest' => "score ASC",
       'default' => "assessed_at DESC"
     }
-    order = orders[param] || orders['default']
-    {:order => order }
+    order_clause = orders[param] || orders['default']
+    order(order_clause)
   }
-  named_scope :for_outcome_ids, lambda{|ids|
-    {:conditions => {:learning_outcome_id => ids} }
-  }
-  named_scope :for_association, lambda{|association|
-    {:conditions => {:association_type => association.class.to_s, :association_id => association.id} }
-  }
-  named_scope :for_associated_asset, lambda{|associated_asset|
-    {:conditions => {:associated_asset_type => associated_asset.class.to_s, :associated_asset_id => associated_asset.id} }
-  }
-  named_scope :for_user, lambda{|user|
-    user_id = user.is_a?(User) ? user.id : user
-    {:conditions => {:user_id => user_id} }
-  }
+  scope :for_outcome_ids, lambda { |ids| where(:learning_outcome_id => ids) }
+  scope :for_association, lambda { |association| where(:association_type => association.class.to_s, :association_id => association.id) }
+  scope :for_associated_asset, lambda { |associated_asset| where(:associated_asset_type => associated_asset.class.to_s, :associated_asset_id => associated_asset.id) }
 end

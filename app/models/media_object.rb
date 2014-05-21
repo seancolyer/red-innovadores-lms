@@ -16,13 +16,15 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
+require 'csv'
+
 class MediaObject < ActiveRecord::Base
   include Workflow
   belongs_to :user
   belongs_to :context, :polymorphic => true
   belongs_to :attachment
   belongs_to :root_account, :class_name => 'Account'
-  validates_presence_of :media_id
+  validates_presence_of :media_id, :workflow_state
   has_many :media_tracks, :dependent => :destroy, :order => 'locale'
   after_create :retrieve_details_later
   after_save :update_title_on_kaltura_later
@@ -51,7 +53,7 @@ class MediaObject < ActiveRecord::Base
 
 
   set_policy do
-    given { |user| self.user && (self.user == user || (self.context && self.context.grants_right?(user, nil, :manage_content))) }
+    given { |user| (self.user && self.user == user) || (self.context && self.context.grants_right?(user, nil, :manage_content)) }
     can :add_captions and can :delete_captions
   end
 
@@ -66,11 +68,18 @@ class MediaObject < ActiveRecord::Base
     files = []
     root_account_id = attachments.map{|a| a.root_account_id }.compact.first
     attachments.select{|a| !a.media_object }.each do |attachment|
+      pseudonym = attachment.user.sis_pseudonym_for(attachment.context) if attachment.user && attachment.context.respond_to?(:root_account)
+      sis_source_id, sis_user_id = "", ""
+      if Kaltura::ClientV3.config['kaltura_sis'].present? && Kaltura::ClientV3.config['kaltura_sis'] == "1"
+        sis_source_id = %Q[,"sis_source_id":"#{attachment.context.sis_source_id}"] if attachment.context.respond_to?('sis_source_id') && attachment.context.sis_source_id
+        sis_user_id = %Q[,"sis_user_id":"#{pseudonym ? pseudonym.sis_user_id : ''}"] if pseudonym
+        context_code = %Q[,"context_code":"#{[attachment.context_type, attachment.context_id].join('_').underscore}"]
+      end
       files << {
                   :name       => attachment.display_name,
                   :url        => attachment.cacheable_s3_download_url,
                   :media_type => (attachment.content_type || "").match(/\Avideo/) ? 'video' : 'audio',
-                  :id         => attachment.id
+                  :partner_data  => %Q[{"attachment_id":"#{attachment.id}","context_source":"file_upload","root_account_id":"#{attachment.root_account_id}" #{sis_source_id} #{sis_user_id} #{context_code}}]
                }
     end
     res = client.bulkUploadAdd(files)
@@ -79,7 +88,13 @@ class MediaObject < ActiveRecord::Base
       if wait_for_completion
         bulk_upload_id = res[:id]
         Rails.logger.debug "waiting for bulk upload id: #{bulk_upload_id}"
+        started_at = Time.now
+        timeout = Setting.get('media_bulk_upload_timeout', 30.minutes.to_s).to_i
         while !res[:ready]
+          if Time.now > started_at + timeout
+            MediaObject.send_later_enqueue_args(:refresh_media_files, {:run_at => 1.minute.from_now, :priority => Delayed::LOW_PRIORITY}, res[:id], attachments.map(&:id), root_account_id)
+            break
+          end
           sleep(1.minute.to_i)
           res = client.bulkUploadGet(bulk_upload_id)
         end
@@ -107,7 +122,7 @@ class MediaObject < ActiveRecord::Base
   end
 
   def self.migration_csv(media_objects)
-    FasterCSV.generate do |csv|
+    CSV.generate do |csv|
       media_objects.each do |mo|
         mo.retrieve_details unless mo.data[:download_url]
         if mo.data[:download_url]
@@ -126,7 +141,19 @@ class MediaObject < ActiveRecord::Base
   def self.build_media_objects(data, root_account_id)
     root_account = Account.find_by_id(root_account_id)
     data[:entries].each do |entry|
-      attachment = Attachment.find_by_id(entry[:originalId]) if entry[:originalId].present?
+      attachment_id = nil
+      if entry[:originalId].present? && (Integer(entry[:originalId]).is_a?(Integer) rescue false)
+        attachment_id = entry[:originalId]
+      elsif entry[:originalId].present? && entry[:originalId].length >= 2
+        partner_data = begin
+          JSON.parse(entry[:originalId]).with_indifferent_access
+        rescue JSON::ParserError
+          Rails.logger.error("Failed to parse kaltura partner info: #{entry[:originalId]}")
+          {}
+        end
+        attachment_id = partner_data[:attachment_id] if partner_data[:attachment_id].present?
+      end
+      attachment = Attachment.find_by_id(attachment_id) if attachment_id
       mo = MediaObject.find_or_initialize_by_media_id(entry[:entryId])
       mo.root_account ||= root_account || Account.default
       mo.title ||= entry[:name]
@@ -137,7 +164,7 @@ class MediaObject < ActiveRecord::Base
         attachment.update_attribute(:media_entry_id, entry[:entryId])
         # check for attachments that were created temporarily, just to import a media object
         if attachment.full_path.starts_with?(File.join(Folder::ROOT_FOLDER_NAME, CC::CCHelper::MEDIA_OBJECTS_FOLDER) + '/')
-          attachment.destroy(false)
+          attachment.destroy
         end
       end
       mo.context ||= mo.root_account
@@ -155,7 +182,7 @@ class MediaObject < ActiveRecord::Base
         MediaObject.send_later_enqueue_args(:refresh_media_files, {:run_at => wait_period.minutes.from_now, :priority => Delayed::LOW_PRIORITY}, bulk_upload_id, attachment_ids, root_account_id, attempt + 1)
       else
         # if it fails, then the attachment should no longer consider itself kalturable
-        Attachment.update_all({:media_entry_id => nil}, "id IN (#{attachment_ids.join(",")}) OR root_attachment_id IN (#{attachment_ids.join(",")})") unless attachment_ids.empty?
+        Attachment.where("id IN (?) OR root_attachment_id IN (?)", attachment_ids, attachment_ids).update_all(:media_entry_id => nil) unless attachment_ids.empty?
       end
       res
     else
@@ -299,17 +326,11 @@ class MediaObject < ActiveRecord::Base
     save!
   end
 
-  named_scope :active, lambda{
-    {:conditions => ['media_objects.workflow_state != ?', 'deleted'] }
-  }
+  scope :active, where("media_objects.workflow_state<>'deleted'")
 
-  named_scope :by_media_id, lambda { |media_id|
-    { :conditions => [ 'media_objects.media_id = ? OR media_objects.old_media_id = ?', media_id, media_id ] }
-  }
+  scope :by_media_id, lambda { |media_id| where("media_objects.media_id=? OR media_objects.old_media_id=?", media_id, media_id) }
 
-  named_scope :by_media_type, lambda { |media_type|
-    { :conditions => [ 'media_objects.media_type = ?', media_type ]}
-  }
+  scope :by_media_type, lambda { |media_type| where(:media_type => media_type) }
 
   workflow do
     state :active

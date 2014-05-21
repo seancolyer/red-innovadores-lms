@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + "/common")
 
 describe "context_modules" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   context "as a student" do
     def create_context_module(module_name)
@@ -45,6 +45,7 @@ describe "context_modules" do
 
       @module_3 = create_context_module('Module Three')
       @quiz_1 = @course.quizzes.create!(:title => "some quiz")
+      @quiz_1.publish!
       @tag_3 = @module_3.add_item({:id => @quiz_1.id, :type => 'quiz'})
       @module_3.completion_requirements = {@tag_3.id => {:type => 'must_view'}}
       @module_3.prerequisites = "module_#{@module_2.id}"
@@ -102,6 +103,14 @@ describe "context_modules" do
       validate_context_module_status_text(1, @completed_text)
       validate_context_module_status_text(2, @completed_text)
     end
+    
+    it "should show progression in large_roster courses" do
+      @course.large_roster = true
+      @course.save!
+      go_to_modules
+      navigate_to_module_item(0, @assignment_1.title)
+      validate_context_module_status_text(0, @completed_text)
+    end
 
     it "should validate that a student can't get to a locked context module" do
       go_to_modules
@@ -110,6 +119,44 @@ describe "context_modules" do
       get "/courses/#{@course.id}/assignments/#{@assignment_2.id}"
       f('#content').should include_text("hasn't been unlocked yet")
       f('#module_prerequisites_list').should be_displayed
+    end
+
+    it "should validate that a student can't get to an unpublished context module" do
+      @module_2.workflow_state = 'unpublished'
+      @module_2.save!
+
+      get "/courses/#{@course.id}/assignments/#{@assignment_2.id}"
+      f('#content').should include_text("is not available yet")
+      f('#module_prerequisites_list').should be_nil
+    end
+
+    it "should validate that a student can't see an unpublished context module item" do
+      @assignment_2.workflow_state = 'unpublished'
+      @assignment_2.save!
+
+      module1_unpublished_tag = @module_1.add_item({:id => @assignment_2.id, :type => 'assignment'})
+      @module_1.completion_requirements = {@tag_1.id => {:type => 'must_view'}, module1_unpublished_tag.id => {:type => 'must_view'}}
+      @module_1.save!
+      @module_1.completion_requirements.map{|h| h[:id]}.should include(@tag_1.id)
+      @module_1.completion_requirements.map{|h| h[:id]}.should include(module1_unpublished_tag.id) # unpublished requirements SHOULD remain
+
+      module2_published_tag = @module_2.add_item({:id => @quiz_1.id, :type => 'quiz'})
+      @module_2.save!
+
+      go_to_modules
+
+      context_modules = ff('.context_module')
+      context_modules[0].find_element(:css, '.context_module_items').should_not include_text(@assignment_2.name)
+      context_modules[1].find_element(:css, '.context_module_items').should_not include_text(@assignment_2.name)
+
+      # Should go to the next module
+      get "/courses/#{@course.id}/assignments/#{@assignment_1.id}"
+      nxt = f('#sequence_footer a.next')
+      URI.parse(nxt.attribute('href')).path.should == "/courses/#{@course.id}/modules/#{@module_2.id}/items/first"
+
+      # Should redirect to the published item
+      get "/courses/#{@course.id}/modules/#{@module_2.id}/items/first"
+      driver.current_url.should match %r{/courses/#{@course.id}/quizzes/#{@quiz_1.id}}
     end
 
     it "should allow a student view student to progress through module content" do

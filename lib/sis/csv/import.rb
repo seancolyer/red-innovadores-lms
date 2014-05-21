@@ -16,12 +16,14 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require 'zip/zip'
-require 'lib/sis/csv/base_importer'
+require 'action_controller_test_process'
+require 'csv'
+require 'zip'
 
 module SIS
   module CSV
     class Import
+
       attr_accessor :root_account, :batch, :errors, :warnings, :finished, :counts, :updates_every,
         :override_sis_stickiness, :add_sis_stickiness, :clear_sis_stickiness
 
@@ -109,13 +111,13 @@ module SIS
           @csvs[importer].reject! do |csv|
             begin
               rows = 0
-              FasterCSV.open(csv[:fullpath], "rb", BaseImporter::PARSE_ARGS) do |faster_csv|
+              ::CSV.open(csv[:fullpath], "rb", CSVBaseImporter::PARSE_ARGS) do |faster_csv|
                 rows += 1 while faster_csv.shift
               end
               @rows[importer] += rows
               @total_rows += rows
               false
-            rescue FasterCSV::MalformedCSVError
+            rescue ::CSV::MalformedCSVError
               add_error(csv, "Malformed CSV")
               true
             end
@@ -315,7 +317,7 @@ module SIS
       end
     
       def unzip_file(file, dest)
-        Zip::ZipFile.open(file) do |zip_file|
+        Zip::File.open(file) do |zip_file|
           zip_file.each do |f|
             f_path = File.join(dest, f.name)
             FileUtils.mkdir_p(File.dirname(f_path))
@@ -337,7 +339,7 @@ module SIS
           Attachment.skip_3rd_party_submits
           @csvs[importer].each do |csv|
             remaining_in_batch = 0
-            FasterCSV.foreach(csv[:fullpath], BaseImporter::PARSE_ARGS) do |row|
+            ::CSV.foreach(csv[:fullpath], CSVBaseImporter::PARSE_ARGS) do |row|
               if remaining_in_batch == 0
                 temp_file += 1
                 if out_csv
@@ -345,18 +347,18 @@ module SIS
                   out_csv = nil
                   att = Attachment.new
                   att.context = @batch
-                  att.uploaded_data = ActionController::TestUploadedFile.new(path, Attachment.mimetype(path))
+                  att.uploaded_data = Rack::Test::UploadedFile.new(path, Attachment.mimetype(path))
                   att.display_name = new_csvs.last[:file]
                   att.save!
                   new_csvs.last.delete(:fullpath)
                   new_csvs.last[:attachment] = att
                 end
                 path = File.join(tmp_dir, "#{importer}#{temp_file}.csv")
-                out_csv = FasterCSV.open(path, "wb", {:headers => headers, :write_headers => true})
+                out_csv = ::CSV.open(path, "wb", {:headers => headers, :write_headers => true})
                 new_csvs << {:file => csv[:file]}
                 remaining_in_batch = rows_per_batch
               end
-              out_row = FasterCSV::Row.new(headers, []);
+              out_row = ::CSV::Row.new(headers, []);
               headers.each { |header| out_row[header] = row[header] }
               out_csv << out_row
               remaining_in_batch -= 1
@@ -367,7 +369,7 @@ module SIS
             out_csv = nil
             att = Attachment.new
             att.context = @batch
-            att.uploaded_data = ActionController::TestUploadedFile.new(path, Attachment.mimetype(path))
+            att.uploaded_data = Rack::Test::UploadedFile.new(path, Attachment.mimetype(path))
             att.display_name = new_csvs.last[:file]
             att.save!
             new_csvs.last.delete(:fullpath)
@@ -400,7 +402,7 @@ module SIS
             return
           end
           begin
-            FasterCSV.foreach(csv[:fullpath], BaseImporter::PARSE_ARGS.merge(:headers => false)) do |row|
+            ::CSV.foreach(csv[:fullpath], CSVBaseImporter::PARSE_ARGS.merge(:headers => false)) do |row|
               row.each(&:downcase!)
               importer = IMPORTERS.index do |importer|
                 if SIS::CSV.const_get(importer.to_s.camelcase + 'Importer').send('is_' + importer.to_s + '_csv?', row)
@@ -414,7 +416,7 @@ module SIS
               add_error(csv, "Couldn't find Canvas CSV import headers") if importer.nil?
               break
             end
-          rescue FasterCSV::MalformedCSVError
+          rescue ::CSV::MalformedCSVError
             add_error(csv, "Malformed CSV")
           end
         elsif !File.directory?(csv[:fullpath]) && !(csv[:fullpath] =~ IGNORE_FILES)

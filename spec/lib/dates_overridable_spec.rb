@@ -43,7 +43,7 @@ shared_examples_for "an object whose dates are overridable" do
 
       it "returns a clone of the object with the relevant override(s) applied" do
         overridden = overridable.overridden_for(@student)
-        overridden.due_at.should == override.due_at
+        overridden.due_at.to_i.should == override.due_at.to_i
       end
 
       it "returns the same object when the user is nil (e.g. a guest)" do
@@ -54,7 +54,7 @@ shared_examples_for "an object whose dates are overridable" do
     context "with no overrides" do
       it "returns the original object" do
         @overridden = overridable.overridden_for(@student)
-        @overridden.due_at.should == overridable.due_at
+        @overridden.due_at.to_i.should == overridable.due_at.to_i
       end
     end
   end
@@ -69,6 +69,136 @@ shared_examples_for "an object whose dates are overridable" do
 
     context "when it doesn't" do
       it { should be_false }
+    end
+
+  end
+
+  describe "has_active_overrides?" do
+    context "has active overrides" do
+      before { override }
+      it "returns true" do
+        overridable.has_active_overrides?.should == true
+      end
+    end
+    context "when it has deleted overrides" do
+      it "returns false" do
+        override.delete
+        overridable.has_active_overrides?.should == false
+      end
+    end
+
+  end
+
+  describe "#all_dates_visible_to" do
+
+    before do
+      @section2 = course.course_sections.create!(:name => "Summer session")
+      override2 = assignment_override_model(overridable_type => overridable)
+      override2.set = @section2
+      override2.override_due_at(18.days.from_now)
+      override2.save!
+    end
+
+    context "as a teacher" do
+      it "only returns active overrides" do
+        override.delete
+        overridable.all_dates_visible_to(@teacher).size.should == 2
+      end
+    end
+
+    context "as a student" do
+      it "only returns active overrides" do
+        course_with_student({:course => course, :active_all => true})
+        override.delete
+        overridable.all_dates_visible_to(@student).size.should == 1
+      end
+    end
+
+    context "as an observer" do
+      before do
+        course_with_student({:course => course, :active_all => true})
+        course_with_observer({:course => course, :active_all => true})
+        course.enroll_user(@observer, "ObserverEnrollment", {:associated_user_id => @student.id})
+      end
+
+      it "only returns active overrides for a single student" do
+        override.delete
+        overridable.all_dates_visible_to(@observer).size.should == 1
+      end
+
+      it "returns all active overrides for 2+ students" do
+        student2 = student_in_section(@section2, {:active_all => true})
+        course.enroll_user(@observer, "ObserverEnrollment", {:allow_multiple_enrollments => true, :associated_user_id => student2.id})
+        override.delete
+        overridable.all_dates_visible_to(@observer).size.should == 2
+      end
+    end
+
+    it "returns each override represented using its as_hash method" do
+      all_dates = overridable.all_dates_visible_to(@user)
+      overridable.active_assignment_overrides.map(&:as_hash).each do |o|
+        all_dates.should include o
+      end
+    end
+
+    it "includes the overridable as a hash" do
+      all_dates = overridable.all_dates_visible_to(@user)
+      last_hash = all_dates.last
+      overridable_hash =
+        overridable.without_overrides.due_date_hash.merge(:base => true)
+      overridable_hash.each do |k,v|
+        last_hash[k].should == v
+      end
+    end
+  end
+
+  describe "#dates_hash_visible_to" do
+
+    before :each do
+      overridable.active_assignment_overrides.stubs(:visible_to => true)
+
+      override.set = course.default_section
+      override.override_due_at(7.days.from_now)
+      override.save!
+
+      @section2 = course.course_sections.create!(:name => "Summer session")
+    end
+
+    it "only returns active overrides" do
+      overridable.dates_hash_visible_to(@teacher).size.should == 2
+    end
+
+    it "includes the original date as a hash" do
+      dates_hash = overridable.dates_hash_visible_to(@teacher)
+      dates_hash.size.should == 2
+
+      override = dates_hash[0]
+      original = dates_hash[1]
+
+      dates_hash.sort_by! {|d| d[:title].to_s }
+      dates_hash[0][:title].should be_nil
+      dates_hash[1][:title].should == "value for name"
+    end
+
+    it "not include original dates if all sections are overriden" do
+      override2 = assignment_override_model(overridable_type => overridable)
+      override2.set = @section2
+      override2.override_due_at(8.days.from_now)
+      override2.save!
+
+      dates_hash = overridable.dates_hash_visible_to(user)
+      dates_hash.size.should == 2
+
+      dates_hash.sort_by! {|d| d[:title] }
+      dates_hash[0][:title].should == "Summer session"
+      dates_hash[1][:title].should == "value for name"
+    end
+
+  end
+
+  describe "without_overrides" do
+    it "returns an object with no overrides applied" do
+      overridable.without_overrides.overridden.should be_false
     end
   end
 
@@ -98,7 +228,7 @@ shared_examples_for "an object whose dates are overridable" do
 
     it "returns a scope" do
       # can't use "should respond_to", because that delegates to the instantiated Array
-      lambda{ overridable.overrides_visible_to(@teacher).scoped({}) }.should_not raise_exception
+      lambda{ overridable.overrides_visible_to(@teacher).scoped }.should_not raise_exception
     end
   end
 
@@ -148,7 +278,7 @@ shared_examples_for "an object whose dates are overridable" do
 
     it "uses the overridden due date as the applicable due date" do
       as_student, _ = overridable.due_dates_for(@student)
-      as_student[:due_at].should == override.due_at
+      as_student[:due_at].to_i.should == override.due_at.to_i
 
       if overridable.is_a?(Assignment)
         as_student[:all_day].should == override.all_day
@@ -156,10 +286,20 @@ shared_examples_for "an object whose dates are overridable" do
       end
     end
 
+    it "doesn't use an overridden due date for a nil user's due dates" do
+      as_student, _ = overridable.overridden_for(@student).due_dates_for(nil)
+      as_student[:due_at].should == overridable.due_at
+    end
+
     it "includes the base due date in the list of due dates" do
       _, as_instructor = overridable.due_dates_for(@teacher)
 
-      expected_params = { :base => true, :due_at => overridable.due_at }
+      expected_params = {
+        :base => true,
+        :due_at => overridable.due_at,
+        :lock_at => overridable.lock_at,
+        :unlock_at => overridable.lock_at
+      }
 
       if overridable.is_a?(Assignment)
         expected_params.merge!({
@@ -173,13 +313,18 @@ shared_examples_for "an object whose dates are overridable" do
 
     it "includes visible due date overrides in the list of due dates" do
       _, as_instructor = overridable.due_dates_for(@teacher)
-      as_instructor.should include({
+      intify_timestamps(as_instructor).should include(intify_timestamps({
+        :id => override.id,
         :title => @course.default_section.name,
         :due_at => override.due_at,
         :all_day => override.all_day,
         :all_day_date => override.all_day_date,
+        :lock_at => override.lock_at,
+        :set_id => override.set_id,
+        :set_type => override.set_type,
+        :unlock_at => override.unlock_at,
         :override => override
-      })
+      }))
     end
 
     it "excludes visible overrides that don't override due_at from the list of due dates" do
@@ -207,11 +352,20 @@ shared_examples_for "an object whose dates are overridable" do
   end
 
   describe "due_date_hash" do
-    it "returns the due at, all day, and all day date params" do
+    it "returns the due at, lock_at, unlock_at, all day, and all day fields" do
       due = 5.days.from_now
-      a = Assignment.new(:due_at => due)
-      a.due_date_hash.should == { :due_at => due, :all_day => false, :all_day_date => nil }
+      due_params = {:due_at => due, :lock_at => due, :unlock_at => due}
+      a = overridable.class.new(due_params)
+      if a.is_a?(Quizzes::Quiz)
+        a.assignment = Assignment.new(due_params)
+      end
+      a.due_date_hash[:due_at].should == due
+      a.due_date_hash[:lock_at].should == due
+      a.due_date_hash[:unlock_at].should == due
+      a.due_date_hash[:all_day].should == false
+      a.due_date_hash[:all_day_date].should == nil
     end
+
   end
 
   describe "observed_student_due_dates" do
@@ -232,188 +386,11 @@ shared_examples_for "an object whose dates are overridable" do
     end
   end
 
-  describe "#unlock_ats_for(user)" do
-    before :each do
-      course_with_student(:course => course, :active_all => true)
-
-      overridable.update_attributes(:unlock_at => 2.days.ago)
-
-      override.set = course.default_section
-      override.override_unlock_at(5.days.ago)
-      override.save!
-    end
-
-    context "for a student" do
-      before do
-        @as_student, @as_instructor = overridable.unlock_ats_for(@student)
-      end
-
-      it "does not return instructor dates" do
-        @as_instructor.should be_nil
-      end
-
-      it "returns a relevant student date" do
-        @as_student.should_not be_nil
-      end
-    end
-
-    context "for a teacher" do
-      before do
-        @as_student, @as_instructor = overridable.unlock_ats_for(@teacher)
-      end
-
-      it "does not return a student date" do
-        @as_student.should be_nil
-      end
-
-      it "returns a list of instructor dates" do
-        @as_instructor.should_not be_nil
-      end
-    end
-
-    it "returns both for a user that's both a student and a teacher" do
-      course_with_ta(:course => course, :user => @student, :active_all => true)
-      as_student, as_instructor = overridable.unlock_ats_for(@student)
-      as_student.should_not be_nil
-      as_instructor.should_not be_nil
-    end
-
-    it "uses the overridden unlock date as the applicable unlock date" do
-      as_student, _ = overridable.unlock_ats_for(@student)
-      as_student.should == { :unlock_at => override.unlock_at }
-    end
-
-    it "includes the base unlock date in the list of unlock dates" do
-      _, as_instructor = overridable.unlock_ats_for(@teacher)
-      as_instructor.should include({ :base => true, :unlock_at => overridable.unlock_at })
-    end
-
-    it "includes visible unlock date overrides in the list of unlock dates" do
-      _, as_instructor = overridable.unlock_ats_for(@teacher)
-      as_instructor.should include({
-        :title => @course.default_section.name,
-        :unlock_at => override.unlock_at,
-        :override => override
-      })
-    end
-
-    it "excludes visible overrides that don't override unlock_at from the list of unlock dates" do
-      override.clear_unlock_at_override
-      override.save!
-
-      _, as_instructor = overridable.unlock_ats_for(@teacher)
-      as_instructor.size.should == 1
-      as_instructor.first[:base].should be_true
-    end
-
-    it "excludes overrides that aren't visible from the list of unlock dates" do
-      @enrollment = @teacher.enrollments.first
-      @enrollment.limit_privileges_to_course_section = true
-      @enrollment.save!
-
-      @section2 = @course.course_sections.create!
-      override.set = @section2
-      override.save!
-
-      _, as_instructor = overridable.unlock_ats_for(@teacher)
-      as_instructor.size.should == 1
-      as_instructor.first[:base].should be_true
-    end
-  end
-
-  describe "#lock_ats_for(user)" do
-    before :each do
-      course_with_student(:course => course, :active_all => true)
-
-      overridable.update_attributes(:unlock_at => 5.days.ago)
-
-      override.set = course.default_section
-      override.override_lock_at(2.days.ago)
-      override.save!
-    end
-
-    context "for a student" do
-      before do
-        @as_student, @as_instructor = overridable.lock_ats_for(@student)
-      end
-
-      it "does not return instructor dates" do
-        @as_instructor.should be_nil
-      end
-
-      it "returns a relevant student date" do
-        @as_student.should_not be_nil
-      end
-    end
-
-    context "for a teacher" do
-      before do
-        @as_student, @as_instructor = overridable.lock_ats_for(@teacher)
-      end
-
-      it "does not return a student date" do
-        @as_student.should be_nil
-      end
-
-      it "returns a list of instructor dates" do
-        @as_instructor.should_not be_nil
-      end
-    end
-
-    it "returns both for a user that's both a student and a teacher" do
-      course_with_ta(:course => course, :user => @student, :active_all => true)
-      as_student, as_instructor = overridable.lock_ats_for(@student)
-      as_student.should_not be_nil
-      as_instructor.should_not be_nil
-    end
-
-    it "uses the overridden lock date as the applicable lock date" do
-      as_student, _ = overridable.lock_ats_for(@student)
-      as_student.should == { :lock_at => override.lock_at }
-    end
-
-    it "includes the base lock date in the list of lock dates" do
-      _, as_instructor = overridable.lock_ats_for(@teacher)
-      as_instructor.should include({ :base => true, :lock_at => overridable.lock_at })
-    end
-
-    it "includes visible lock date overrides in the list of lock dates" do
-      _, as_instructor = overridable.lock_ats_for(@teacher)
-      as_instructor.detect { |a| a[:override].present? }.should == {
-        :title => course.default_section.name,
-        :lock_at => override.lock_at,
-        :override => override
-      }
-    end
-
-    it "excludes visible overrides that don't override lock_at from the list of lock dates" do
-      override.clear_lock_at_override
-      override.save!
-
-      _, as_instructor = overridable.lock_ats_for(@teacher)
-      as_instructor.size.should == 1
-      as_instructor.first[:base].should be_true
-    end
-
-    it "excludes overrides that aren't visible from the list of lock dates" do
-      @enrollment = @teacher.enrollments.first
-      @enrollment.limit_privileges_to_course_section = true
-      @enrollment.save!
-
-      @section2 = course.course_sections.create!
-      override.set = @section2
-      override.save!
-
-      _, as_instructor = overridable.lock_ats_for(@teacher)
-      as_instructor.size.should == 1
-      as_instructor.first[:base].should be_true
-    end
-  end
-
   describe "multiple_due_dates?" do
     before do
       course_with_student(:course => course)
-      override.set = course.default_section
+      course.course_sections.create!
+      override.set = course.active_course_sections.second
       override.override_due_at(2.days.ago)
       override.save!
     end
@@ -443,35 +420,6 @@ shared_examples_for "an object whose dates are overridable" do
         overridable.overridden_for(nil).multiple_due_dates?.should == false
       end
     end
-  end
-
-  describe "due_dates" do
-    before do
-      course_with_student(:course => course)
-      override.set = course.default_section
-      override.override_due_at(2.days.ago)
-      override.save!
-    end
-
-    context "when the object has been overridden" do
-      context "for a teacher" do
-        it "returns all relevant dates" do
-          overridable.overridden_for(@teacher).due_dates.size.should == 2
-        end
-      end
-
-      context "for a student" do
-        it "returns one date" do
-          overridable.overridden_for(@student).due_dates.size.should == 1
-        end
-      end
-    end
-
-    context "when the object hasn't been overridden" do
-      it "raises an exception because it doesn't have any context" do
-        expect { overridden.due_dates }.to raise_exception
-      end
-    end    
   end
 
   describe "overridden_for?" do
@@ -506,14 +454,14 @@ shared_examples_for "an object whose dates are overridable" do
 end
 
 describe Assignment do
-  it_should_behave_like "an object whose dates are overridable"
+  include_examples "an object whose dates are overridable"
 
   let(:overridable) { assignment_model(:due_at => 5.days.ago) }
   let(:overridable_type) { :assignment }
 end
 
-describe Quiz do
-  it_should_behave_like "an object whose dates are overridable"
+describe Quizzes::Quiz do
+  include_examples "an object whose dates are overridable"
 
   let(:overridable) { quiz_model(:due_at => 5.days.ago) }
   let(:overridable_type) { :quiz }

@@ -18,7 +18,7 @@
 
 require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 
-describe AssignmentOverridesController, :type => :integration do
+describe AssignmentOverridesController, type: :request do
   def validate_override_json(override, json)
     json['id'].should == override.id
     json['assignment_id'].should == override.assignment_id
@@ -63,7 +63,7 @@ describe AssignmentOverridesController, :type => :integration do
   end
 
   def expect_errors(errors)
-    response.status.should == '400 Bad Request'
+    assert_status(400)
     json = JSON.parse(response.body)
     json.should == {"errors" => errors}
   end
@@ -158,7 +158,7 @@ describe AssignmentOverridesController, :type => :integration do
       @override.save!
 
       raw_api_show_override(@course, @assignment, @override)
-      response.status.should == '404 Not Found'
+      assert_status(404)
     end
 
     it "should exclude due_at/all_day/all_day_date/lock_at/unlock_at when not overridden" do
@@ -191,7 +191,7 @@ describe AssignmentOverridesController, :type => :integration do
     end
 
     it "should include proper set fields when set is a group" do
-      @assignment.group_category = @course.group_categories.create!
+      @assignment.group_category = @course.group_categories.create!(name: "foo")
       @assignment.save!
 
       @group = @course.groups.create!(:name => 'my group', :group_category => @assignment.group_category)
@@ -251,7 +251,7 @@ describe AssignmentOverridesController, :type => :integration do
                    :controller => 'assignment_overrides', :action => 'group_alias', :format => 'json',
                    :group_id => @other_group.id.to_s,
                    :assignment_id => @assignment.id.to_s)
-      response.status.should == '404 Not Found'
+      assert_status(404)
     end
 
     it "should 404 for unconnected group/assignment" do
@@ -262,7 +262,7 @@ describe AssignmentOverridesController, :type => :integration do
                    :controller => 'assignment_overrides', :action => 'group_alias', :format => 'json',
                    :group_id => @other_group.id.to_s,
                    :assignment_id => @assignment.id.to_s)
-      response.status.should == '404 Not Found'
+      assert_status(404)
     end
   end
 
@@ -292,7 +292,7 @@ describe AssignmentOverridesController, :type => :integration do
                    :controller => 'assignment_overrides', :action => 'section_alias', :format => 'json',
                    :course_section_id => @section.id.to_s,
                    :assignment_id => @assignment.id.to_s)
-      response.status.should == '404 Not Found'
+      assert_status(404)
     end
 
     it "should 404 for unconnected section/assignment" do
@@ -302,7 +302,7 @@ describe AssignmentOverridesController, :type => :integration do
                    :controller => 'assignment_overrides', :action => 'section_alias', :format => 'json',
                    :course_section_id => @course.default_section.id.to_s,
                    :assignment_id => @assignment.id.to_s)
-      response.status.should == '404 Not Found'
+      assert_status(404)
     end
   end
 
@@ -379,7 +379,7 @@ describe AssignmentOverridesController, :type => :integration do
       end
 
       it "should error if the assignment is a group assignment" do
-        @assignment.group_category = @course.group_categories.create!
+        @assignment.group_category = @course.group_categories.create!(name: "foo")
         @assignment.save!
 
         raw_api_create_override(@course, @assignment, :assignment_override => { :student_ids => [@student.id], :title => @title })
@@ -389,7 +389,7 @@ describe AssignmentOverridesController, :type => :integration do
 
     context "group" do
       before :each do
-        @assignment.group_category = @course.group_categories.create!
+        @assignment.group_category = @course.group_categories.create!(name: "foo")
         @assignment.save!
         @group = group_model(:context => @course, :group_category => @assignment.group_category)
       end
@@ -437,12 +437,15 @@ describe AssignmentOverridesController, :type => :integration do
         expect_error("unknown section id \"#{@course.default_section.id}\"")
       end
 
-      it "should error if the assignment is a group assignment" do
-        @assignment.group_category = @course.group_categories.create!
+      it "should not error if the assignment is a group assignment" do
+        @assignment.group_category = @course.group_categories.create!(name: "foo")
         @assignment.save!
 
-        raw_api_create_override(@course, @assignment, :assignment_override => { :course_section_id => @course.default_section.id })
-        expect_error('course_section_id is not valid for group assignments')
+        api_create_override(@course, @assignment, :assignment_override => { :course_section_id => @course.default_section.id })
+
+        @override = @assignment.assignment_overrides(true).first
+        @override.should_not be_nil
+        @override.set.should == @course.default_section
       end
     end
 
@@ -471,7 +474,7 @@ describe AssignmentOverridesController, :type => :integration do
       end
 
       it "should ignore course_section_id if there is a group_id" do
-        @assignment.group_category = @course.group_categories.create!
+        @assignment.group_category = @course.group_categories.create!(name: "foo")
         @assignment.save!
         @group = group_model(:context => @course, :group_category => @assignment.group_category)
 
@@ -687,7 +690,7 @@ describe AssignmentOverridesController, :type => :integration do
 
     context "group override" do
       before :each do
-        @assignment.group_category = @course.group_categories.create!
+        @assignment.group_category = @course.group_categories.create!(name: "foo")
         @assignment.save!
         @group = group_model(:context => @course, :group_category => @assignment.group_category)
 
@@ -941,7 +944,7 @@ describe AssignmentOverridesController, :type => :integration do
       raw_api_call(:delete, "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}/overrides/#{@override.id}.json",
                    :controller => 'assignment_overrides', :action => 'destroy', :format => 'json',
                    :course_id => @course.id.to_s, :assignment_id => @assignment.id.to_s, :id => @override.id.to_s)
-      response.status.should == '404 Not Found'
+      assert_status(404)
     end
   end
 end

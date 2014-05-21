@@ -17,22 +17,13 @@
 #
 
 module GradebooksHelper
-  def should_be_published?(students, assignment, submissions)
-    return false if assignment.published?
-    return true if assignment.needs_publishing?
-    submissions = submissions.select{|s| s.assignment_id == assignment.id && s.score}
-    result = (submissions.length.to_f / students.length.to_f) > 0.5 &&
-      !assignment.available?
-    result
-  end
-  
   def display_grade(grade)
     grade.blank? ? "--" : grade
   end
 
   def gradebook_url_for(user, context, assignment=nil)
     if context
-      gradebook_version = (user.nil? || user.prefers_gradebook2?) ? 'gradebook2' : 'gradebook'
+      gradebook_version = get_gradebook_version(user, context)
       gradebook_url = polymorphic_url([context, gradebook_version])
 
       if assignment && gradebook_version == 'gradebook'
@@ -42,4 +33,17 @@ module GradebooksHelper
 
     gradebook_url
   end
+
+  def get_gradebook_version(user, context)
+    if user.nil? || user.prefers_gradebook2?(context)
+      'gradebook2'
+    elsif context.feature_enabled?(:screenreader_gradebook) && user.gradebook_preference == 'srgb'
+      'screenreader_gradebook'
+    elsif context.old_gradebook_visible?
+      'gradebook'
+    else
+      'gradebook2'
+    end
+  end
+
 end

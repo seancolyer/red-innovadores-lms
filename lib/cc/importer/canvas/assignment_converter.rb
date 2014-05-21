@@ -49,7 +49,9 @@ module CC::Importer::Canvas
       assignment["assignment_group_migration_id"] = get_node_val(meta_doc, "assignment_group_identifierref")
       assignment["grading_standard_migration_id"] = get_node_val(meta_doc, "grading_standard_identifierref")
       assignment["rubric_migration_id"] = get_node_val(meta_doc, "rubric_identifierref")
+      assignment["rubric_id"] = get_node_val(meta_doc, "rubric_external_identifier")
       assignment["quiz_migration_id"] = get_node_val(meta_doc, "quiz_identifierref")
+      assignment["workflow_state"] = get_node_val(meta_doc, "workflow_state") if meta_doc.at_css("workflow_state")
       if meta_doc.at_css("saved_rubric_comments comment")
         assignment[:saved_rubric_comments] = {}
         meta_doc.css("saved_rubric_comments comment").each do |comment_node|
@@ -64,7 +66,7 @@ module CC::Importer::Canvas
       ["turnitin_enabled", "peer_reviews_assigned", "peer_reviews",
        "automatic_peer_reviews", "anonymous_peer_reviews", "freeze_on_copy",
        "grade_group_students_individually", "external_tool_new_tab",
-       "rubric_use_for_grading", "rubric_hide_score_total"].each do |bool_val|
+       "rubric_use_for_grading", "rubric_hide_score_total", "muted"].each do |bool_val|
         val = get_bool_val(meta_doc, bool_val)
         assignment[bool_val] = val unless val.nil?
       end
@@ -72,7 +74,7 @@ module CC::Importer::Canvas
         val = get_time_val(meta_doc, date_type)
         assignment[date_type] = val unless val.nil?
       end
-      ['points_possible', 'min_score', 'max_score', 'mastery_score'].each do |f_type|
+      ['points_possible'].each do |f_type|
         val = get_float_val(meta_doc, f_type)
         assignment[f_type] = val unless val.nil?
       end

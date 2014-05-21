@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2013 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -16,9 +16,15 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require 'onelogin/saml'
-
 class AccountAuthorizationConfig < ActiveRecord::Base
+  cattr_accessor :saml_enabled
+  begin
+    require 'onelogin/saml'
+    self.saml_enabled = true
+  rescue LoadError
+    self.saml_enabled = false
+  end
+
   belongs_to :account
   acts_as_list :scope => :account
 
@@ -30,8 +36,13 @@ class AccountAuthorizationConfig < ActiveRecord::Base
                   :login_attribute, :idp_entity_id
 
   before_validation :set_saml_defaults, :if => Proc.new { |aac| aac.saml_authentication? }
+
+  VALID_AUTH_TYPES = %w[cas ldap saml]
+  validates_inclusion_of :auth_type, in: VALID_AUTH_TYPES, message: "invalid auth_type, must be one of #{VALID_AUTH_TYPES.join(',')}"
   validates_presence_of :account_id
   validates_presence_of :entity_id, :if => Proc.new{|aac| aac.saml_authentication?}
+  validate :validate_multiple_auth_configs
+
   after_create :disable_open_registration_if_delegated
   after_destroy :enable_canvas_authentication
   # if the config changes, clear out last_timeout_failure so another attempt can be made immediately
@@ -181,24 +192,25 @@ class AccountAuthorizationConfig < ActiveRecord::Base
     
     encryption = app_config[:encryption]
     if encryption.is_a?(Hash)
-      resolve_path = lambda { |path|
-        if path.nil?
-          nil
-        elsif path[0, 1] == '/'
-          path
-        else
-          File.join(Rails.root, 'config', path)
-        end
-      }
+      settings.xmlsec_certificate = resolve_saml_key_path(encryption[:certificate])
+      settings.xmlsec_privatekey = resolve_saml_key_path(encryption[:private_key])
 
-      private_key_path = resolve_path.call(encryption[:private_key])
-      certificate_path = resolve_path.call(encryption[:certificate])
-
-      settings.xmlsec_certificate = certificate_path if certificate_path.present? && File.exists?(certificate_path)
-      settings.xmlsec_privatekey = private_key_path if private_key_path.present? && File.exists?(private_key_path)
+      settings.xmlsec_additional_privatekeys = Array(encryption[:additional_private_keys]).map { |apk| resolve_saml_key_path(apk) }.compact
     end
     
     settings
+  end
+
+  def self.resolve_saml_key_path(path)
+    return nil unless path
+
+    path = Pathname(path)
+
+    if path.relative?
+      path = Rails.root.join 'config', path
+    end
+
+    path.exist? ? path.to_s : nil
   end
   
   def email_identifier?
@@ -309,8 +321,8 @@ class AccountAuthorizationConfig < ActiveRecord::Base
 
   def disable_open_registration_if_delegated
     if self.delegated_authentication? && self.account.open_registration?
-      @account.settings = { :open_registration => false, :self_registration => false }
-      @account.save!
+      self.account.settings = { :open_registration => false, :self_registration => false }
+      self.account.save!
     end
   end
 
@@ -365,38 +377,38 @@ class AccountAuthorizationConfig < ActiveRecord::Base
   end
 
   def ldap_bind_result(unique_id, password_plaintext)
-    if self.last_timeout_failure.present?
-      failure_timeout = self.class.ldap_failure_wait_time.ago
-      if self.last_timeout_failure >= failure_timeout
-        # we've failed too recently, don't try again
-        return nil
-      end
+    return nil if password_plaintext.blank?
+
+    default_timeout = Setting.get('ldap_timelimit', 5.seconds.to_s).to_f
+
+    Canvas.timeout_protection("ldap:#{self.global_id}",
+                              raise_on_timeout: true,
+                              fallback_timeout_length: default_timeout) do
+      ldap = self.ldap_connection
+      filter = self.ldap_filter(unique_id)
+      ldap.bind_as(:base => ldap.base, :filter => filter, :password => password_plaintext)
     end
-
-    timelimit = Setting.get('ldap_timelimit', 5.seconds.to_s).to_f
-
-    begin
-      Timeout.timeout(timelimit) do
-        ldap = self.ldap_connection
-        filter = self.ldap_filter(unique_id)
-        res = ldap.bind_as(:base => ldap.base, :filter => filter, :password => password_plaintext)
-        return res if res
-      end
-    rescue Net::LDAP::LdapError
-      ErrorReport.log_exception(:ldap, $!, :account => self.account)
-    rescue Timeout::Error
-      ErrorReport.log_exception(:ldap, $!, :account => self.account)
+  rescue => e
+    ErrorReport.log_exception(:ldap, e, :account => self.account)
+    if e.is_a?(Timeout::Error)
       self.update_attribute(:last_timeout_failure, Time.now)
-    rescue
-      ErrorReport.log_exception(:ldap, $!, :account => self.account)
     end
-
     return nil
   end
 
   def clear_last_timeout_failure
     unless self.last_timeout_failure_changed?
       self.last_timeout_failure = nil
+    end
+  end
+
+  def validate_multiple_auth_configs
+    return true unless account
+    other_configs = account.account_authorization_configs - [self]
+    if other_configs.any? { |other| other.auth_type != self.auth_type }
+      errors.add(:auth_type, :mixing_authentication_types)
+    elsif !other_configs.empty? && self.cas_authentication?
+      errors.add(:auth_type, :multiple_cas_configs)
     end
   end
 end

@@ -18,10 +18,9 @@
 
 module Api::V1::StreamItem
   include Api::V1::Context
-  include Api::V1::Collection
   include Api::V1::Submission
 
-  def stream_item_json(stream_item, current_user, session)
+  def stream_item_json(stream_item_instance, stream_item, current_user, session)
     data = stream_item.data(current_user.id)
     {}.tap do |hash|
 
@@ -32,6 +31,7 @@ module Api::V1::StreamItem
       hash['title'] = data.respond_to?(:title) ? data.title : nil
       hash['message'] = data.respond_to?(:body) ? data.body : nil
       hash['type'] = stream_item.data.class.name
+      hash['read_state'] = stream_item_instance.read?
       hash.merge!(context_data(stream_item))
       context_type, context_id = stream_item.context_type.try(:underscore), stream_item.context_id
 
@@ -40,14 +40,8 @@ module Api::V1::StreamItem
         context = stream_item.asset.context
         hash['message'] = api_user_content(data.message, context)
         if stream_item.data.class.name == 'DiscussionTopic'
-          if context_type == "collection_item"
-            # TODO: build the html_url for the collection item (we want to send them
-            # there instead of directly to the discussion.)
-            # These html routes aren't enabled yet, so we can't build them here yet.
-          else
-            hash['discussion_topic_id'] = stream_item.asset_id
-            hash['html_url'] = send("#{context_type}_discussion_topic_url", context_id, stream_item.asset_id)
-          end
+          hash['discussion_topic_id'] = stream_item.asset_id
+          hash['html_url'] = send("#{context_type}_discussion_topic_url", context_id, stream_item.asset_id)
         else
           hash['announcement_id'] = stream_item.asset_id
           hash['html_url'] = send("#{context_type}_announcement_url", context_id, stream_item.asset_id)
@@ -98,11 +92,6 @@ module Api::V1::StreamItem
         # TODO: this type isn't even shown on the web activity stream yet
         hash['type'] = 'Collaboration'
         hash['html_url'] = send("#{context_type}_collaboration_url", context_id, stream_item.asset_id) if context_type
-      when "CollectionItem"
-        item = stream_item.asset
-        hash['title'] = item.data.title
-        hash['message'] = item.data.description
-        hash['collection_item'] = collection_items_json([item], current_user, session).first
       else
         raise("Unexpected stream item type: #{stream_item.asset_type}")
       end
@@ -110,15 +99,32 @@ module Api::V1::StreamItem
   end
 
   def api_render_stream_for_contexts(contexts, paginate_url)
-    # for backwards compatibility, since this api used to be hard-coded to return 21 items
-    params[:per_page] ||= 21
     opts = {}
     opts[:contexts] = contexts if contexts.present?
 
     items = @current_user.shard.activate do
-      scope = @current_user.visible_stream_item_instances(opts).scoped(:include => :stream_item)
-      Api.paginate(scope, self, self.send(paginate_url, @context)).to_a
+      scope = @current_user.visible_stream_item_instances(opts).includes(:stream_item)
+      Api.paginate(scope, self, self.send(paginate_url, @context), default_per_page: 21).to_a
     end
-    render :json => items.map(&:stream_item).compact.map { |i| stream_item_json(i, @current_user, session) }
+    render :json => items.select(&:stream_item).map { |i| stream_item_json(i, i.stream_item, @current_user, session) }
+  end
+
+  def api_render_stream_summary(contexts = nil)
+    opts = {}
+    opts[:contexts] = contexts
+    items = @current_user.shard.activate do
+      # not ideal, but 1. we can't aggregate in the db (boo yml) and
+      # 2. stream_item_json is where categorizing logic lives :(
+      @current_user.visible_stream_item_instances(opts).includes(:stream_item).map { |i|
+        stream_item_json(i, i.stream_item, @current_user, session)
+      }.inject({}) { |result, i|
+        key = [i['type'], i['notification_category']]
+        result[key] ||= {type: i['type'], count: 0, unread_count: 0, notification_category: i['notification_category']}
+        result[key][:count] += 1
+        result[key][:unread_count] += 1 if !i['read_state']
+        result
+      }.values.sort_by{ |i| i[:type] }
+    end
+    render :json => items
   end
 end

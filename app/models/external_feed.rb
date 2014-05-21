@@ -25,7 +25,7 @@ class ExternalFeed < ActiveRecord::Base
   before_validation :infer_defaults
 
   include CustomValidations
-  validates_presence_of :url
+  validates_presence_of :url, :context_id, :context_type
   validates_as_url :url
 
   VERBOSITIES = %w(full link_only truncate)
@@ -51,14 +51,12 @@ class ExternalFeed < ActiveRecord::Base
     write_attribute(:header_match, str.to_s.strip.presence)
   end
   
-  named_scope :to_be_polled, lambda {
-    { :conditions => ['external_feeds.consecutive_failures < ? and external_feeds.refresh_at < ?', 5, Time.now ], :order => :refresh_at }
+  scope :to_be_polled, lambda {
+    where("external_feeds.consecutive_failures<5 AND external_feeds.refresh_at<?", Time.now.utc).order(:refresh_at)
   }
   
-  named_scope :for, lambda {|obj|
-    { :conditions => ['external_feeds.feed_purpose = ?', obj] }
-  }
-  
+  scope :for, lambda { |obj| where(:feed_purpose => obj) }
+
   def add_rss_entries(rss)
     items = rss.items.map{|item| add_entry(item, rss, :rss) }.compact
     self.context.add_aggregate_entries(items, self) if self.context && self.context.respond_to?(:add_aggregate_entries)
@@ -98,7 +96,7 @@ class ExternalFeed < ActiveRecord::Base
       entry ||= self.external_feed_entries.find_by_url(item.link)
       description = entry && entry.message
       if !description || description.empty?
-        description = "<a href='#{item.link}'>#{t :original_article, "Original article"}</a><br/><br/>"
+        description = "<a href='#{ERB::Util.h(item.link)}'>#{ERB::Util.h(t(:original_article, "Original article"))}</a><br/><br/>"
         description += format_description(item.description || item.title)
       end
       if entry
@@ -112,7 +110,7 @@ class ExternalFeed < ActiveRecord::Base
       date = (item.respond_to?(:date) && item.date) || Time.zone.today
       return nil if self.header_match && !item.title.downcase.include?(self.header_match.downcase)
       return nil if (date && self.created_at > date rescue false)
-      description = "<a href='#{item.link}'>#{t :original_article, "Original article"}</a><br/><br/>"
+      description = "<a href='#{ERB::Util.h(item.link)}'>#{ERB::Util.h(t(:original_article, "Original article"))}</a><br/><br/>"
       description += format_description(item.description || item.title)
       entry = self.external_feed_entries.create(
         :title => item.title,
@@ -130,7 +128,7 @@ class ExternalFeed < ActiveRecord::Base
       entry ||= self.external_feed_entries.find_by_url(item.links.alternate.to_s)
       description = entry && entry.message
       if !description || description.empty?
-        description = "<a href='#{item.links.alternate.to_s}'>#{t :original_article, "Original article"}</a><br/><br/>"
+        description = "<a href='#{ERB::Util.h(item.links.alternate.to_s)}'>#{ERB::Util.h(t(:original_article, "Original article"))}</a><br/><br/>"
         description += format_description(item.content || item.title)
       end
       if entry
@@ -147,7 +145,7 @@ class ExternalFeed < ActiveRecord::Base
       return nil if self.header_match && !item.title.downcase.include?(self.header_match.downcase)
       return nil if (item.published && self.created_at > item.published rescue false)
       author = item.authors.first || OpenObject.new
-      description = "<a href='#{item.links.alternate.to_s}'>#{t :original_article, "Original article"}</a><br/><br/>"
+      description = "<a href='#{ERB::Util.h(item.links.alternate.to_s)}'>#{ERB::Util.h(t(:original_article, "Original article"))}</a><br/><br/>"
       description += format_description(item.content || item.title)
       entry = self.external_feed_entries.create(
         :title => item.title,
@@ -167,7 +165,7 @@ class ExternalFeed < ActiveRecord::Base
       entry ||= self.external_feed_entries.find_by_title_and_url(item.summary, item.url)
       description = entry && entry.message
       if !description || description.empty?
-        description = "<a href='#{item.url}'>#{t :original_article, "Original article"}</a><br/><br/>"
+        description = "<a href='#{ERB::Util.h(item.url)}'>#{ERB::Util.h(t(:original_article, "Original article"))}</a><br/><br/>"
         description += (item.description || item.summary).to_s
       end
       if entry
@@ -182,7 +180,7 @@ class ExternalFeed < ActiveRecord::Base
         return entry
       end
       description = (item.description || item.summary).to_s
-      description += "<br/><br/><a href='#{item.url}'>#{item.url}</a>"
+      description += "<br/><br/><a href='#{ERB::Util.h(item.url)}'>#{ERB::Util.h(item.url)}</a>"
       entry = self.external_feed_entries.create(
         :title => item.summary,
         :message => description,
@@ -205,7 +203,7 @@ class ExternalFeed < ActiveRecord::Base
         begin
           import_from_migration(tool, migration.context)
         rescue
-          migration.add_warning("Couldn't import external feed \"#{tool[:title]}\"", $!)
+          migration.add_import_warning(t('#migration.external_feed_type', "External Feed"), tool[:title], $!)
         end
       end
     end

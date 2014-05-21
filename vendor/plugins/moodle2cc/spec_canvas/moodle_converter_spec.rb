@@ -1,4 +1,4 @@
-require File.dirname(__FILE__) + '/spec_helper'
+require File.expand_path(File.dirname(__FILE__) + '/spec_helper')
 
 describe Moodle::Converter do
 
@@ -6,23 +6,28 @@ describe Moodle::Converter do
     fixture_dir = File.dirname(__FILE__) + '/fixtures'
     archive_file_path = File.join(fixture_dir, 'moodle_backup_1_9.zip')
     unzipped_file_path = File.join(File.dirname(archive_file_path), "moodle_#{File.basename(archive_file_path, '.zip')}", 'oi')
-    @converter = Moodle::Converter.new(:export_archive_path=>archive_file_path, :course_name=>'oi', :base_download_dir=>unzipped_file_path)
-    @converter.export
-    @course_data = @converter.course.with_indifferent_access
-    @converter.delete_unzipped_archive
+    converter = Moodle::Converter.new(:export_archive_path=>archive_file_path, :course_name=>'oi', :base_download_dir=>unzipped_file_path)
+    converter.export
+    @base_course_data = converter.course.with_indifferent_access
+    converter.delete_unzipped_archive
     if File.exists?(unzipped_file_path)
       FileUtils::rm_rf(unzipped_file_path)
     end
   end
 
   before(:each) do
+    # make a deep copy
+    @course_data = Marshal.load(Marshal.dump(@base_course_data))
     @course = Course.create(:name => "test course")
     @cm = ContentMigration.create(:context => @course)
+    @course.content_migration = @cm
   end
 
   it "should successfully import the course" do
     @course.import_from_migration(@course_data, nil, @cm)
-    @cm.migration_settings[:warnings].should be_nil
+    allowed_warnings = ["Multiple Dropdowns question may have been imported incorrectly",
+                        "Missing links found in imported content"]
+    @cm.old_warnings_format.all?{|w| allowed_warnings.find{|aw| w[0].start_with?(aw)}}.should == true
   end
 
   context "discussion topics" do
@@ -110,7 +115,7 @@ describe Moodle::Converter do
       AssignmentGroup.process_migration(@course_data, @cm)
       ExternalFeed.process_migration(@course_data, @cm)
       GradingStandard.process_migration(@course_data, @cm)
-      Quiz.process_migration(@course_data, @cm, question_data)
+      Quizzes::Quiz.process_migration(@course_data, @cm, question_data)
     end
 
     it "should convert quizzes" do
@@ -275,6 +280,13 @@ describe Moodle::Converter do
       question.question_data[:question_name].should == "Rate Scale 1..5 Question"
       question.question_data[:question_text].should == "Rate Scale 1..5 Question Text\nquestion1 [response1]\nquestion2 [response2]\nquestion3 [response3]"
       question.question_data[:question_type].should == 'multiple_dropdowns_question'
+
+      # add warnings because these question types seem to be ambiguously structured in moodle
+      warnings = @cm.migration_issues.select{|w|
+        w.description == "Multiple Dropdowns question may have been imported incorrectly" &&
+          w.fix_issue_html_url.include?("question_#{question.assessment_question_id}")
+      }
+      warnings.count.should == 1
     end
 
     it "should convert Moodle Questionnaire Text Box Question to Canvas essay_question" do

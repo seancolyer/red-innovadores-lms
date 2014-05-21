@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2013 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -25,10 +25,11 @@ describe AppointmentGroup do
     end
 
     it "should ensure the course section matches the course" do
+      other_section = Course.create!.default_section
       AppointmentGroup.new(
         :title => "test",
         :contexts => [@course],
-        :sub_context_codes => [CourseSection.create.asset_string]
+        :sub_context_codes => [other_section.asset_string]
       ).should_not be_valid
     end
 
@@ -36,7 +37,7 @@ describe AppointmentGroup do
       AppointmentGroup.new(
         :title => "test",
         :contexts => [@course],
-        :sub_context_codes => [GroupCategory.create.asset_string]
+        :sub_context_codes => [GroupCategory.create(name: "foo").asset_string]
       ).should_not be_valid
     end
 
@@ -76,7 +77,7 @@ describe AppointmentGroup do
 
     it "should not add contexts when it has a group category" do
       course1 = course
-      gc = course1.group_categories.create!
+      gc = group_category(context: course1)
       ag = AppointmentGroup.create!(:title => 'test',
                                     :contexts => [course1],
                                     :sub_context_codes => [gc.asset_string])
@@ -178,7 +179,7 @@ describe AppointmentGroup do
       section2 = @course.course_sections.create!
       section3 = @course.course_sections.create!
       other_course = Course.create!
-      gc = @course.group_categories.create!
+      gc = group_category
       @user_group = @course.groups.create!(:group_category => gc)
 
       student_in_course(:course => @course, :active_all => true)
@@ -322,6 +323,11 @@ describe AppointmentGroup do
       # multiple contexts and sub contexts
       @g9.grants_right?(@teacher2, nil, :manage).should be_true
       @g9.grants_right?(@teacher3, nil, :manage).should be_false
+    end
+
+    it "should ignore deleted courses when performing permissions checks" do
+      @course3.destroy
+      @g8.reload.grants_right?(@teacher2, nil, :manage).should be_true
     end
   end
 
@@ -477,7 +483,7 @@ describe AppointmentGroup do
       @group1.participating_users << @users.last
       @group1.save!
       @gc = @group1.group_category
-      @group2 = @gc.groups.create!(:name => "group2")
+      @group2 = @gc.groups.create!(:name => "group2", :context => @course)
 
       @ag = AppointmentGroup.create!(:title => "test", :contexts => [@course], :participants_per_appointment => 2, :new_appointments => [["#{Time.now.year + 1}-01-01 12:00:00", "#{Time.now.year + 1}-01-01 13:00:00"], ["#{Time.now.year + 1}-01-01 13:00:00", "#{Time.now.year + 1}-01-01 14:00:00"]])
     end

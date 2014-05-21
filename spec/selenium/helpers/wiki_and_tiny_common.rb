@@ -1,8 +1,5 @@
 require File.expand_path(File.dirname(__FILE__) + '/../common')
 
-shared_examples_for "wiki and tiny selenium tests" do
-  it_should_behave_like "in-process server selenium tests"
-
   def clear_wiki_rce
     wiki_page_body = driver.find_element(:id, :wiki_page_body)
     wiki_page_body.clear
@@ -25,11 +22,11 @@ shared_examples_for "wiki and tiny selenium tests" do
     @text_file = @root_folder.attachments.create!(:filename => 'text_file.txt', :context => @course) { |a| a.content_type = 'text/plain' }
     @image1 = @root_folder.attachments.build(:context => @course)
     path = File.expand_path(File.dirname(__FILE__) + '/../../../public/images/email.png')
-    @image1.uploaded_data = ActionController::TestUploadedFile.new(path, Attachment.mimetype(path))
+    @image1.uploaded_data = Rack::Test::UploadedFile.new(path, Attachment.mimetype(path))
     @image1.save!
     @image2 = @root_folder.attachments.build(:context => @course)
     path = File.expand_path(File.dirname(__FILE__) + '/../../../public/images/graded.png')
-    @image2.uploaded_data = ActionController::TestUploadedFile.new(path, Attachment.mimetype(path))
+    @image2.uploaded_data = Rack::Test::UploadedFile.new(path, Attachment.mimetype(path))
     @image2.save!
     get "/courses/#{@course.id}/wiki"
 
@@ -38,9 +35,9 @@ shared_examples_for "wiki and tiny selenium tests" do
   end
 
   def add_text_to_tiny(text)
-    f('.wiki_switch_views_link').click
+    fj('.wiki_switch_views_link:visible').click
     clear_wiki_rce
-    f('.wiki_switch_views_link').click
+    fj('.wiki_switch_views_link:visible').click
     type_in_tiny('#wiki_page_body', text)
     in_frame "wiki_page_body_ifr" do
       f('#tinymce').send_keys(:return)
@@ -49,9 +46,9 @@ shared_examples_for "wiki and tiny selenium tests" do
   end
 
   def add_text_to_tiny_no_val(text)
-    f('.wiki_switch_views_link').click
+    fj('.wiki_switch_views_link:visible').click
     clear_wiki_rce
-    f('.wiki_switch_views_link').click
+    fj('.wiki_switch_views_link:visible').click
     type_in_tiny('#wiki_page_body', text)
   end
 
@@ -69,10 +66,10 @@ shared_examples_for "wiki and tiny selenium tests" do
     end
   end
 
-  def create_wiki_page(title, hfs, edit_roles)
-    p = @course.wiki.wiki_pages.create(:title => title, :hide_from_students => hfs, :editing_roles => edit_roles, :notify_of_update => true)
-    p.save!
-    p
+  def create_wiki_page(title, unpublished, edit_roles)
+    wiki_page = @course.wiki.wiki_pages.create(:title => title, :editing_roles => edit_roles, :notify_of_update => true)
+    wiki_page.unpublish! if unpublished
+    wiki_page
   end
 
   def select_all_wiki
@@ -94,21 +91,38 @@ shared_examples_for "wiki and tiny selenium tests" do
     end
   end
 
-  def add_flickr_image(el)
-    el.find_element(:css, '.mce_instructure_embed').click
-    f('.flickr_search_link').click
-    f('#image_search_form > input').send_keys('angel')
-    submit_form('#image_search_form')
-    wait_for_ajax_requests
-    keep_trying_until { f('.image_link').should be_displayed }
-    f('.image_link').click
+  def add_canvas_image(el, folder, filename)
+    el.find_element(:css, '.mce_instructure_image').click
+    dialog = ff('.ui-dialog').reverse.detect(&:displayed?)
+    f('a[href="#tabUploaded"]', dialog).click
+    keep_trying_until { f('.folderLabel', dialog).should be_displayed }
+    folder_el = ff('.folderLabel', dialog).detect { |el| el.text == folder }
+    folder_el.should_not be_nil
+    folder_el.click unless folder_el['class'].split.include?('expanded')
+    keep_trying_until { f('.treeFile', dialog).should be_displayed }
+    file_el = f(".treeFile[title=\"#{filename}\"]", dialog)
+    file_el.should_not be_nil
+    file_el.click
+    wait_for_ajaximations
+    f('.ui-dialog-buttonset .btn-primary', dialog).click
+    wait_for_ajaximations
+  end
+
+  def add_url_image(el, url, alt_text)
+    el.find_element(:css, '.mce_instructure_image').click
+    dialog = ff('.ui-dialog').reverse.detect(&:displayed?)
+    f('a[href="#tabUrl"]', dialog).click
+    f('[name="image[src]"]', dialog).send_keys(url)
+    f('[name="image[alt]"]', dialog).send_keys(alt_text)
+    f('.ui-dialog-buttonset .btn-primary', dialog).click
+    wait_for_ajaximations
   end
 
   def add_image_to_rce
     wait_for_tiny(keep_trying_until { f("#new_wiki_page") })
-    f('.wiki_switch_views_link').click
+    fj('.wiki_switch_views_link:visible').click
     clear_wiki_rce
-    f('.wiki_switch_views_link').click
+    fj('.wiki_switch_views_link:visible').click
     f('#editor_tabs .ui-tabs-nav li:nth-child(3) a').click
     f('.upload_new_image_link').click
     wiki_page_tools_upload_file('#sidebar_upload_image_form', :image)
@@ -121,4 +135,3 @@ shared_examples_for "wiki and tiny selenium tests" do
     get "/courses/#{@course.id}/wiki" #can't just wait for the dom, for some reason it stays in edit mode
     wait_for_ajax_requests
   end
-end

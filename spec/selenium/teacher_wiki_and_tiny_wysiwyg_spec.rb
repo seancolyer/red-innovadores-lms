@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/helpers/wiki_and_tiny_common')
 
 describe "Wiki pages and Tiny WYSIWYG editor features" do
-  it_should_behave_like "wiki and tiny selenium tests"
+  include_examples "in-process server selenium tests"
 
   context "WYSIWYG generic as a teacher" do
 
@@ -162,10 +162,10 @@ describe "Wiki pages and Tiny WYSIWYG editor features" do
 
     it "should add and remove links" do
       title = "test_page"
-      hfs = false
+      unpublished = false
       edit_roles = "public"
 
-      create_wiki_page(title, hfs, edit_roles)
+      create_wiki_page(title, unpublished, edit_roles)
 
       get "/courses/#{@course.id}/wiki"
       wait_for_tiny(keep_trying_until { f("#new_wiki_page") })
@@ -209,9 +209,9 @@ describe "Wiki pages and Tiny WYSIWYG editor features" do
       f('#tinymce').should include_text(first_text)
     end
     #make sure each view uses the proper format
-    f('.wiki_switch_views_link').click
+    fj('.wiki_switch_views_link:visible').click
     driver.execute_script("return $('#wiki_page_body').val()").should include '<em><strong>'
-    f('.wiki_switch_views_link').click
+    fj('.wiki_switch_views_link:visible').click
     in_frame "wiki_page_body_ifr" do
       f('#tinymce').should_not include_text('<p>')
     end
@@ -225,16 +225,17 @@ describe "Wiki pages and Tiny WYSIWYG editor features" do
   end
 
   it "should add an equation to the rce by using equation buttons" do
+    pending "check_image broken"
     get "/courses/#{@course.id}/wiki"
 
     f('#wiki_page_body_instructure_equation').click
-    wait_for_animations
+    wait_for_ajaximations
     f('.mathquill-editor').should be_displayed
     misc_tab = f('.mathquill-tab-bar > li:last-child a')
-    driver.action.move_to(misc_tab).perform
+    misc_tab.click
     f('#Misc_tab li:nth-child(35) a').click
     basic_tab = f('.mathquill-tab-bar > li:first-child a')
-    driver.action.move_to(basic_tab).perform
+    basic_tab.click
     f('#Basic_tab li:nth-child(27) a').click
     f('.ui-dialog-buttonset .btn-primary').click
     keep_trying_until do
@@ -255,16 +256,15 @@ describe "Wiki pages and Tiny WYSIWYG editor features" do
     equation_text = '\\text{yay math stuff:}\\:\\frac{d}{dx}\\sqrt{x}=\\frac{d}{dx}x^{\\frac{1}{2}}=\\frac{1}{2}x^{-\\frac{1}{2}}=\\frac{1}{2\\sqrt{x}}\\text{that. is. so. cool.}'
 
     get "/courses/#{@course.id}/wiki"
-
     f('#wiki_page_body_instructure_equation').click
-    wait_for_animations
+    wait_for_ajaximations
     f('.mathquill-editor').should be_displayed
     textarea = f('.mathquill-editor .textarea textarea')
     3.times do
       textarea.send_keys(:backspace)
     end
 
-    # "paste" some latex
+    # "paste" some text
     driver.execute_script "$('.mathquill-editor .textarea textarea').val('\\\\text{yay math stuff:}\\\\:\\\\frac{d}{dx}\\\\sqrt{x}=').trigger('paste')"
     # make sure it renders correctly (inclding the medium space)
     f('.mathquill-editor').text.should include "yay math stuff: \nd\n\dx\n"
@@ -275,18 +275,89 @@ describe "Wiki pages and Tiny WYSIWYG editor features" do
     textarea.send_keys "x^1/2"
     textarea.send_keys :arrow_right
     textarea.send_keys :arrow_right
-    f('.mathquill-editor .mathquill-toolbar a[title="="]').click
+    textarea.send_keys "="
     textarea.send_keys "1/2"
     textarea.send_keys :arrow_right
     textarea.send_keys "x^-1/2"
     textarea.send_keys :arrow_right
     textarea.send_keys :arrow_right
     textarea.send_keys "=1/2"
-    f('.mathquill-editor .mathquill-toolbar a[title="\\\\sqrt"]').click
+    textarea.send_keys "\\sqrt"
+    textarea.send_keys :space
     textarea.send_keys "x"
     textarea.send_keys :arrow_right
     textarea.send_keys :arrow_right
     textarea.send_keys "\\text that. is. so. cool."
+    f('.ui-dialog-buttonset .btn-primary').click
+    wait_for_ajax_requests
+    in_frame "wiki_page_body_ifr" do
+      keep_trying_until { f('.equation_image').attribute('title').should == equation_text }
+
+      # currently there's an issue where the equation is double-escaped in the
+      # src, though it's correct after the redirect to codecogs. here we just
+      # want to confirm we redirect correctly. so when that bug is fixed, this
+      # spec should still pass.
+      src = f('.equation_image').attribute('src')
+      response = Net::HTTP.get_response(URI.parse(src))
+      response.code.should == "302"
+      response.header['location'].should include URI.encode(equation_text, Regexp.new("[^#{URI::PATTERN::UNRESERVED}]"))
+    end
+  end
+
+  it "should add an equation to the rce by using equation buttons in advanced view" do
+    pending('broken')
+    get "/courses/#{@course.id}/wiki"
+
+    f('#wiki_page_body_instructure_equation').click
+    wait_for_ajaximations
+    f('.mathquill-editor').should be_displayed
+    f('a.math-toggle-link').click
+    wait_for_ajaximations
+    f('#mathjax-editor').should be_displayed
+    misc_tab = f('#mathjax-view .mathquill-tab-bar > li:last-child a')
+    misc_tab.click
+    f('#misc_tab li:nth-child(35) a').click
+    basic_tab = f('#mathjax-view .mathquill-tab-bar > li:first-child a')
+    basic_tab.click
+    f('#basic_tab li:nth-child(27) a').click
+    f('.ui-dialog-buttonset .btn-primary').click
+    keep_trying_until do
+      in_frame "wiki_page_body_ifr" do
+        f('#tinymce img.equation_image').should be_displayed
+      end
+    end
+
+    submit_form('#new_wiki_page')
+    wait_for_ajax_requests
+    get "/courses/#{@course.id}/wiki" #can't just wait for the dom, for some reason it stays in edit mode
+    wait_for_ajax_requests
+
+    check_image(f('#wiki_body img'))
+  end
+
+  it "should add an equation to the rce by using the equation editor in advanced view" do
+    equation_text = '\\text{yay math stuff:}\\:\\frac{d}{dx}\\sqrt{x}=\\frac{d}{dx}x^{\\frac{1}{2}}= \\frac{1}{2}x^{-\\frac{1}{2}}=\\frac{1}{2\\sqrt{x}}\\text{that. is. so. cool.}'
+
+    get "/courses/#{@course.id}/wiki"
+    f('#wiki_page_body_instructure_equation').click
+    wait_for_ajaximations
+    f('.mathquill-editor').should be_displayed
+    f('a.math-toggle-link').click
+    wait_for_ajaximations
+    f('#mathjax-editor').should be_displayed
+    textarea = f('#mathjax-editor')
+    3.times do
+      textarea.send_keys(:backspace)
+    end
+
+    # "paste" some latex
+    driver.execute_script "$('#mathjax-editor').val('\\\\text{yay math stuff:}\\\\:\\\\frac{d}{dx}\\\\sqrt{x}=').trigger('paste')"
+
+
+    textarea.send_keys "\\frac{d}{dx}x^{\\frac{1}{2}}"
+    f('#mathjax-view .mathquill-toolbar a[title="="]').click
+    textarea.send_keys "\\frac{1}{2}x^{-\\frac{1}{2}}=\\frac{1}{2\\sqrt{x}}\\text{that. is. so. cool.}"
+
     f('.ui-dialog-buttonset .btn-primary').click
     wait_for_ajax_requests
     in_frame "wiki_page_body_ifr" do

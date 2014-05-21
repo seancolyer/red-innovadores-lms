@@ -1,9 +1,9 @@
 require File.expand_path(File.dirname(__FILE__) + '/helpers/quizzes_common')
 
 describe "One Question at a Time Quizzes" do
-  it_should_behave_like "quizzes selenium tests"
+  include_examples "quizzes selenium tests"
 
-  def create_oqaat_quiz
+  def create_oqaat_quiz(opts={})
 
     course_with_teacher(:active_all => true)
     student_in_course(:active_all => true)
@@ -12,22 +12,25 @@ describe "One Question at a Time Quizzes" do
     quiz_question("Question 2", "What is the second question?", 2)
     quiz_question("Question 3", "What is the third question?", 3)
     @quiz.title = "OQAAT quiz"
-    @quiz.workflow_state = "available"
     @quiz.one_question_at_a_time = true
-    @quiz.generate_quiz_data
+    if opts[:publish]
+      @quiz.workflow_state = "available"
+      @quiz.generate_quiz_data
+    end
     @quiz.published_at = Time.now
     @quiz.save!
   end
 
   def quiz_question(name, question, id)
-    answers = {
-      :a => {:weight=>100, :answer_text=>"A", :answer_comments=>"", :id=>1490},
-      :b => {:weight=>0, :answer_text=>"B", :answer_comments=>"", :id=>1020},
-      :c => {:weight=>0, :answer_text=>"C", :answer_comments=>"", :id=>7051}
-    }
+    answers = [
+      {:weight=>100, :answer_text=>"A", :answer_comments=>"", :id=>1490},
+      {:weight=>0, :answer_text=>"B", :answer_comments=>"", :id=>1020},
+      {:weight=>0, :answer_text=>"C", :answer_comments=>"", :id=>7051}
+    ]
     data = { :question_name=>name, :points_possible=>1, :question_text=>question,
       :answers=>answers, :question_type=>"multiple_choice_question"
     }
+
     @quiz.quiz_questions.create!(:question_data => data)
   end
 
@@ -38,8 +41,8 @@ describe "One Question at a Time Quizzes" do
   end
   
   def preview_the_quiz
-    get "/courses/#{@course.id}/quizzes/#{@quiz.id}/edit"
-    fj("#quiz_options_form a:contains('Preview the Quiz')").click
+    get "/courses/#{@course.id}/quizzes/#{@quiz.id}"
+    f("#preview_quiz_button").click
     wait_for_ajaximations
   end
 
@@ -52,6 +55,7 @@ describe "One Question at a Time Quizzes" do
     fj("a:contains('OQAAT quiz')").click
     wait_for_ajaximations
     fj("a:contains('Resume Quiz')").click
+    wait_for_ajaximations
   end
 
   def navigate_directly_to_first_question
@@ -70,6 +74,7 @@ describe "One Question at a Time Quizzes" do
     expect_new_page_load {
       fj("button:contains('Begin'):visible").click
     }
+    wait_for_ajaximations
   end
 
   def it_should_be_on_first_question
@@ -103,7 +108,7 @@ describe "One Question at a Time Quizzes" do
     expect_new_page_load {
       fj("#question_list a:contains('Question 1')").click
     }
-
+    wait_for_ajaximations
     it_should_be_on_first_question
   end
 
@@ -111,12 +116,14 @@ describe "One Question at a Time Quizzes" do
     expect_new_page_load {
       fj("button:contains('Next')").click
     }
+    wait_for_ajaximations
   end
 
   def click_previous_button
     expect_new_page_load {
       fj("button:contains('Previous')").click
     }
+    wait_for_ajaximations
   end
 
   def it_should_not_show_previous_button
@@ -157,10 +164,12 @@ describe "One Question at a Time Quizzes" do
 
   def answer_the_question_correctly
     fj(".answers label:contains('A')").click
+    wait_for_ajaximations
   end
 
   def answer_the_question_incorrectly
     fj(".answers label:contains('B')").click
+    wait_for_ajaximations
   end
 
   def it_should_show_two_correct_answers
@@ -218,19 +227,19 @@ describe "One Question at a Time Quizzes" do
 
   context "as a student" do
     before do
-      create_oqaat_quiz
+      create_oqaat_quiz(:publish => true)
       user_session(@student)
     end
 
     context "on a OQAAT quiz" do
-      it "displays one question at a time" do
-        take_the_quiz
-        back_and_forth_flow
-      end
-
       it "saves answers and grades the quiz" do
         take_the_quiz
         answers_flow
+      end
+
+      it "displays one question at a time" do
+        take_the_quiz
+        back_and_forth_flow
       end
 
       it "warns you about submitting unanswered questions" do
@@ -245,6 +254,7 @@ describe "One Question at a Time Quizzes" do
       end
 
       it "displays one question at a time but you cant go back" do
+        pending("193")
         take_the_quiz
 
         it_should_show_cant_go_back_warning
@@ -291,7 +301,7 @@ describe "One Question at a Time Quizzes" do
         submit_unfinished_quiz
       end
 
-      it "should warn about resuming from the right sidebar" do
+      it "should warn about resuming" do
         take_the_quiz
 
         it_should_show_cant_go_back_warning
@@ -304,7 +314,7 @@ describe "One Question at a Time Quizzes" do
 
         fj("a:contains('OQAAT quiz')").click
         wait_for_ajaximations
-        fj("#right-side a:contains('Resume Quiz')").click
+        fj("#not_right_side .take_quiz_button a:contains('Resume Quiz')").click
 
         it_should_show_cant_go_back_warning
         accept_cant_go_back_warning
@@ -321,14 +331,14 @@ describe "One Question at a Time Quizzes" do
     end
 
     context "on a OQAAT quiz" do
-      it "displays one question at a time" do
-        preview_the_quiz
-        back_and_forth_flow
-      end
-
       it "saves answers and grades the quiz" do
         preview_the_quiz
         answers_flow
+      end
+
+      it "displays one question at a time" do
+        preview_the_quiz
+        back_and_forth_flow
       end
     end
 
@@ -338,6 +348,7 @@ describe "One Question at a Time Quizzes" do
       end
 
       it "displays one question at a time but you cant go back" do
+        pending("193")
         preview_the_quiz
         sequential_flow
       end

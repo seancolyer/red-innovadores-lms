@@ -39,6 +39,17 @@ describe Handlebars do
         should eql('{{{t "test" "*%{person}* is *so* **cool**" scope="test" w0="<b>$1</b>" w1="<b title=\\"%{definition}\\"><i>$1</i></b>"}}}')
     end
 
+    it "should remove extraneous whitespace from the translation and wrappers" do
+      Handlebars.prepare_i18n(<<-HBS, 'test')[:content].strip.
+        {{#t "test"}}
+          <b>
+            ohai
+          </b>
+        {{/t}}
+      HBS
+        should eql('{{{t "test" "*ohai *" scope="test" w0="<b> $1</b>"}}}')
+    end
+
     it "should not allow nested helper calls" do
       lambda {
         Handlebars.prepare_i18n('{{#t "test"}}{{call a helper}}{{/t}}', 'test')
@@ -46,12 +57,10 @@ describe Handlebars do
     end
 
     it "should fix up the scope" do
-      Handlebars.prepare_i18n('{{#t "foo"}}hello{{/t}}', '_test')[:content].
-        should eql('{{{t "foo" "hello" scope="test"}}}')
-      Handlebars.prepare_i18n('{{#t "foo"}}hello{{/t}}', 'test/test')[:content].
-        should eql('{{{t "foo" "hello" scope="test.test"}}}')
-      Handlebars.prepare_i18n('{{#t "foo"}}hello{{/t}}', 'test/_this_is_a_test')[:content].
-        should eql('{{{t "foo" "hello" scope="test.this_is_a_test"}}}')
+      Handlebars.scopify('_test').should == "test"
+      Handlebars.scopify('test/test').should == "test.test"
+      Handlebars.scopify('test/_this_is-a_test').should == "test.this_is_a_test"
+      Handlebars.scopify('test/_andThisIsATest').should == "test.and_this_is_a_test"
     end
 
   end

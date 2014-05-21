@@ -21,6 +21,7 @@
 # RubricAssociation, which may or may not have an association model.
 class RubricAssessment < ActiveRecord::Base
   include TextHelper
+  include HtmlTextHelper
 
   attr_accessible :rubric, :rubric_association, :user, :score, :data, :comments, :assessor, :artifact, :assessment_type
   belongs_to :rubric
@@ -33,7 +34,7 @@ class RubricAssessment < ActiveRecord::Base
   
   simply_versioned
   
-  validates_presence_of :assessment_type
+  validates_presence_of :assessment_type, :rubric_id, :artifact_id, :artifact_type, :assessor_id
   validates_length_of :comments, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
   
   before_save :update_artifact_parameters
@@ -48,7 +49,7 @@ class RubricAssessment < ActiveRecord::Base
   
   def update_outcomes_for_assessment(outcome_ids=[])
     return if outcome_ids.empty?
-    alignments = self.rubric_association.association.learning_outcome_alignments.find_all_by_learning_outcome_id(outcome_ids)
+    alignments = self.rubric_association.association_object.learning_outcome_alignments.find_all_by_learning_outcome_id(outcome_ids)
     (self.data || []).each do |rating|
       if rating[:learning_outcome_id]
         alignments.each do |alignment|
@@ -125,16 +126,16 @@ class RubricAssessment < ActiveRecord::Base
     }
   end
   protected :update_assessment_requests
-  
+
   def attempt
     self.artifact_type == 'Submission' ? self.artifact.attempt : nil
   end
-  
+
   def update_artifact
     if self.artifact_type == 'Submission' && self.artifact
-      Submission.update_all({:has_rubric_assessment => true}, {:id => self.artifact.id})
+      Submission.where(:id => self.artifact).update_all(:has_rubric_assessment => true)
       if self.rubric_association && self.rubric_association.use_for_grading && self.artifact.score != self.score
-        if self.rubric_association.association.grants_right?(self.assessor, nil, :grade)
+        if self.rubric_association.association_object.grants_right?(self.assessor, nil, :grade)
           # TODO: this should go through assignment.grade_student to 
           # handle group assignments.
           self.artifact.workflow_state = 'graded'
@@ -161,21 +162,23 @@ class RubricAssessment < ActiveRecord::Base
     given {|user, session| 
       self.rubric_association && 
       self.rubric_association.grants_rights?(user, session, :manage)[:manage] &&
-      (self.rubric_association.association.context.grants_right?(self.assessor, nil, :manage_grades) rescue false)
+      (self.rubric_association.association_object.context.grants_right?(self.assessor, nil, :manage_rubrics) rescue false)
     }
     can :update
   end
   
-  named_scope :of_type, lambda {|type|
-    {:conditions => ['rubric_assessments.assessment_type = ?', type.to_s]}
-  }
-  
+  scope :of_type, lambda { |type| where(:assessment_type => type.to_s) }
+
   def methods_for_serialization(*methods)
     @serialization_methods = methods
   end
+
+  def serialization_methods
+    @serialization_methods || []
+  end
   
   def assessor_name
-    self.assessor.name rescue t('unknown_user', "Unknown User")
+    self.assessor.short_name rescue t('unknown_user', "Unknown User")
   end
   
   def assessment_url
@@ -187,10 +190,10 @@ class RubricAssessment < ActiveRecord::Base
   end
   
   def related_group_submissions_and_assessments
-    if self.rubric_association && self.rubric_association.association.is_a?(Assignment) && !self.rubric_association.association.grade_group_students_individually 
-      students = self.rubric_association.association.group_students(self.user).last
+    if self.rubric_association && self.rubric_association.association_object.is_a?(Assignment) && !self.rubric_association.association_object.grade_group_students_individually
+      students = self.rubric_association.association_object.group_students(self.user).last
       submissions = students.map do |student|
-        submission = self.rubric_association.association.find_asset_for_assessment(self.rubric_association, student.id).first
+        submission = self.rubric_association.association_object.find_asset_for_assessment(self.rubric_association, student.id).first
         {:submission => submission, :rubric_assessments => submission.rubric_assessments.map{|ra| ra.as_json(:methods => :assessor_name)}}
       end
     else

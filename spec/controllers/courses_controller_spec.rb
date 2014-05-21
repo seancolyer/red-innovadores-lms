@@ -51,6 +51,42 @@ describe CoursesController do
         assigns[:current_enrollments].should_not include e
       end
     end
+
+    it "should include unpublished enrollments in future enrollments" do
+      user
+      future_course  = Course.create!(:name => 'future course', :start_at => Time.now + 2.weeks,
+                                      :restrict_enrollments_to_course_dates => true)
+      current_course = Course.create!(:name => 'current course', :start_at => Time.now - 2.weeks)
+
+      current_unpublished_course  = Course.create!(:name => 'future course 2', :start_at => Time.now - 2.weeks)
+      future_unpublished_course  = Course.create!(:name => 'future course 2', :start_at => Time.now + 2.weeks)
+      future_unrestricted_course = Course.create!(:name => 'future course 3', :start_at => Time.now + 2.weeks)
+
+      current_enrollment = StudentEnrollment.create!(:course => current_course, :user => @user)
+      future_enrollment  = StudentEnrollment.create!(:course => future_course, :user => @user)
+      current_unpublished_enrollment = StudentEnrollment.create!(:course => current_unpublished_course, :user => @user)
+      future_unpublished_enrollment = StudentEnrollment.create!(:course => future_unpublished_course, :user => @user)
+      future_unrestricted_enrollment = StudentEnrollment.create!(:course => future_unrestricted_course, :user => @user)
+
+      [future_course, current_course, future_unrestricted_course].each { |course| course.offer }
+      [current_enrollment, future_enrollment, current_unpublished_enrollment, future_unpublished_enrollment, future_unrestricted_enrollment].each { |e| e.accept }
+
+      user_session(@user)
+      get 'index'
+      response.should be_success
+      assigns[:future_enrollments].count.should == 3
+      assigns[:future_enrollments].should include(future_enrollment)
+      assigns[:future_enrollments].should include(current_unpublished_enrollment)
+      assigns[:future_enrollments].should include(future_unpublished_enrollment)
+    end
+  end
+
+  describe "GET 'statistics'" do
+    it 'does not break using new student_ids method from course' do
+      course_with_teacher_logged_in(:active_all => true)
+      get 'statistics', :format => 'json', :course_id => @course.id
+      response.should be_success
+    end
   end
 
   describe "GET 'settings'" do
@@ -78,7 +114,7 @@ describe CoursesController do
       @course.workflow_state = 'claimed'
       @course.save!
       get 'settings', :course_id => @course.id
-      response.status.should == '401 Unauthorized'
+      assert_status(401)
       assigns[:unauthorized_reason].should == :unpublished
       assigns[:unauthorized_message].should_not be_nil
 
@@ -88,7 +124,7 @@ describe CoursesController do
       @enrollment.end_at = 4.days.from_now
       @enrollment.save!
       get 'settings', :course_id => @course.id
-      response.status.should == '401 Unauthorized'
+      assert_status(401)
       assigns[:unauthorized_reason].should == :unpublished
       assigns[:unauthorized_message].should_not be_nil
     end
@@ -134,7 +170,7 @@ describe CoursesController do
       response.should redirect_to(course_url(@course.id))
       assigns[:pending_enrollment].should be_nil
     end
-    
+
     it "should accept invitation for logged-in user" do
       course_with_student_logged_in(:active_course => true, :active_user => true)
       post 'enrollment_invitation', :course_id => @course.id, :accept => '1', :invitation => @enrollment.uuid
@@ -143,7 +179,7 @@ describe CoursesController do
       assigns[:pending_enrollment].should eql(@enrollment)
       assigns[:pending_enrollment].should be_active
     end
-    
+
     it "should ask user to login for registered not-logged-in user" do
       user_with_pseudonym(:active_course => true, :active_user => true)
       course(:active_all => true)
@@ -178,7 +214,7 @@ describe CoursesController do
       course_with_student_logged_in(:active_course => true, :active_user => true)
       @e2 = @course.enroll_user(@u2)
       post 'enrollment_invitation', :course_id => @course.id, :accept => '1', :invitation => @e2.uuid
-      response.should redirect_to(login_url(:re_login => 1))
+      response.should redirect_to(login_url(:force_login => 1))
     end
 
     it "should accept an enrollment for a restricted by dates course" do
@@ -206,7 +242,9 @@ describe CoursesController do
     it "should not find deleted courses" do
       course_with_teacher_logged_in(:active_all => true)
       @course.destroy
-      lambda { get 'show', :id => @course.id }.should raise_exception(ActiveRecord::RecordNotFound)
+      assert_page_not_found do
+        get 'show', :id => @course.id
+      end
     end
 
     it "should assign variables" do
@@ -222,7 +260,7 @@ describe CoursesController do
       @course.workflow_state = 'claimed'
       @course.save!
       get 'show', :id => @course.id
-      response.status.should == '401 Unauthorized'
+      assert_status(401)
       assigns[:unauthorized_reason].should == :unpublished
       assigns[:unauthorized_message].should_not be_nil
 
@@ -232,7 +270,7 @@ describe CoursesController do
       @enrollment.end_at = 4.days.from_now
       @enrollment.save!
       get 'show', :id => @course.id
-      response.status.should == '401 Unauthorized'
+      assert_status(401)
       assigns[:unauthorized_reason].should == :unpublished
       assigns[:unauthorized_message].should_not be_nil
     end
@@ -260,23 +298,47 @@ describe CoursesController do
       get 'show', :id => @c2.id
       assert_unauthorized
     end
-    
+
+    it "should show unauthorized/authorized to a student for a future course depending on restrict_student_future_view setting" do
+      course_with_student_logged_in(:active_course => 1)
+      a = @course.root_account
+      a.settings[:restrict_student_future_view] = true
+      a.save!
+
+      @course.start_at = Time.now + 2.weeks
+      @course.restrict_enrollments_to_course_dates = true
+      @course.save!
+
+      get 'show', :id => @course.id
+      assert_status(401)
+      assigns[:unauthorized_message].should_not be_nil
+
+      a.settings[:restrict_student_future_view] = false
+      a.save!
+
+      controller.instance_variable_set(:@context_all_permissions, nil)
+
+      get 'show', :id => @course.id
+      response.should be_success
+      assigns[:context].should eql(@course)
+    end
+
     context "show feedback for the current course only on course front page" do
       before(:each) do
         course_with_student_logged_in(:active_all => true)
         @course1 = @course
         course_with_teacher(:course => @course1)
-        
+
         course_with_student(:active_all => true, :user => @student)
         @course2 = @course
         course_with_teacher(:course => @course2, :user => @teacher)
-        
+
         @a1 = @course1.assignments.new(:title => "some assignment course 1")
         @a1.workflow_state = "published"
         @a1.save
         @s1 = @a1.submit_homework(@student)
         @c1 = @s1.add_comment(:author => @teacher, :comment => "some comment1")
-        
+
         # this shouldn't show up in any course 1 list
         @a2 = @course2.assignments.new(:title => "some assignment course 2")
         @a2.workflow_state = "published"
@@ -284,47 +346,68 @@ describe CoursesController do
         @s2 = @a2.submit_homework(@student)
         @c2 = @s2.add_comment(:author => @teacher, :comment => "some comment2")
       end
-      
-      it "should work for module view" do 
+
+      it "should work for module view" do
         @course1.default_view = "modules"
         @course1.save
         get 'show', :id => @course1.id
         assigns(:recent_feedback).count.should == 1
         assigns(:recent_feedback).first.assignment_id.should == @a1.id
       end
-      
-      it "should work for assignments view" do 
+
+      it "should work for assignments view" do
         @course1.default_view = "assignments"
-        @course1.save
+        @course1.save!
         get 'show', :id => @course1.id
         assigns(:recent_feedback).count.should == 1
         assigns(:recent_feedback).first.assignment_id.should == @a1.id
       end
-      
-      it "should work for wiki view" do 
+
+      it "should not show unpublished assignments to students" do
+        @course1.default_view = "assignments"
+        @course1.save!
+        @course1.account.enable_feature!(:draft_state)
+        @a1.unpublish
+        get 'show', :id => @course1.id
+        assigns(:assignments).map(&:id).include?(@a1.id).should be_false
+      end
+
+      it "should work for wiki view" do
         @course1.default_view = "wiki"
         @course1.save
         get 'show', :id => @course1.id
         assigns(:recent_feedback).count.should == 1
         assigns(:recent_feedback).first.assignment_id.should == @a1.id
       end
-      
-      it "should work for syllabus view" do 
+
+      it "should work for wiki view with draft state enabled" do
+        @course1.account.allow_feature!(:draft_state)
+        @course1.enable_feature!(:draft_state)
+        @course1.default_view = "wiki"
+        @course1.save!
+        @course1.wiki.wiki_pages.create!(:title => 'blah').set_as_front_page!
+        get 'show', :id => @course1.id
+        controller.js_env[:WIKI_RIGHTS].should eql({:read => true})
+        controller.js_env[:PAGE_RIGHTS].should eql({:read => true})
+        controller.js_env[:COURSE_TITLE].should eql @course1.name
+      end
+
+      it "should work for syllabus view" do
         @course1.default_view = "syllabus"
         @course1.save
         get 'show', :id => @course1.id
         assigns(:recent_feedback).count.should == 1
         assigns(:recent_feedback).first.assignment_id.should == @a1.id
       end
-      
-      it "should work for feed view" do 
+
+      it "should work for feed view" do
         @course1.default_view = "feed"
         @course1.save
         get 'show', :id => @course1.id
         assigns(:recent_feedback).count.should == 1
         assigns(:recent_feedback).first.assignment_id.should == @a1.id
       end
-      
+
       it "should only show recent feedback if user is student in specified course" do
         course_with_teacher(:active_all => true, :user => @student)
         @course3 = @course
@@ -354,7 +437,7 @@ describe CoursesController do
         @course.save!
 
         get 'show', :id => @course.id, :invitation => @enrollment.uuid
-        response.status.should == '401 Unauthorized'
+        assert_status(401)
         assigns[:unauthorized_message].should_not be_nil
 
         # unpublished course with invited student in account that disallows previews
@@ -364,7 +447,7 @@ describe CoursesController do
         @course.save!
 
         get 'show', :id => @course.id, :invitation => @enrollment.uuid
-        response.status.should == '401 Unauthorized'
+        assert_status(401)
         assigns[:unauthorized_message].should_not be_nil
       end
 
@@ -403,7 +486,7 @@ describe CoursesController do
       it "should ignore invitations that have been accepted (not logged in)" do
         course_with_student(:active_course => 1, :active_enrollment => 1)
         get 'show', :id => @course.id, :invitation => @enrollment.uuid
-        response.status.should == '401 Unauthorized'
+        assert_status(401)
       end
 
       it "should ignore invitations that have been accepted (logged in)" do
@@ -440,7 +523,8 @@ describe CoursesController do
       it "should auto-redirect to registration page when it's a self-enrollment" do
         course_with_student(:active_course => 1)
         @user = User.new
-        @user.communication_channels.build(:path => "jt@instructure.com")
+        cc = @user.communication_channels.build(:path => "jt@instructure.com")
+        cc.user = @user
         @user.workflow_state = 'creation_pending'
         @user.save!
         @enrollment = @course.enroll_student(@user)
@@ -499,7 +583,7 @@ describe CoursesController do
       user_session(@user)
 
       get 'show', :id => @course.id
-      response.status.should == '302 Found'
+      response.should be_redirect
       response.location.should match(%r{/courses/#{@course.id}/settings})
     end
 
@@ -510,7 +594,7 @@ describe CoursesController do
       user_session(@user)
 
       xhr :get, 'show', :id => @course.id
-      response.status.should == '200 OK'
+      response.should be_success
     end
 
     it "should redirect to the xlisted course" do
@@ -524,20 +608,20 @@ describe CoursesController do
       response.location.should match(%r{/courses/#{@course2.id}})
     end
   end
-  
-  describe "POST 'unenroll'" do
+
+  describe "POST 'unenroll_user'" do
     it "should require authorization" do
       course_with_teacher(:active_all => true)
       post 'unenroll_user', :course_id => @course.id, :id => @enrollment.id
       assert_unauthorized
     end
-    
+
     it "should not allow students to unenroll" do
       course_with_student_logged_in(:active_all => true)
       post 'unenroll_user', :course_id => @course.id, :id => @enrollment.id
       assert_unauthorized
     end
-    
+
     it "should unenroll users" do
       course_with_teacher_logged_in(:active_all => true)
       student_in_course
@@ -562,7 +646,7 @@ describe CoursesController do
       @course.enrollments.map{|e| e.user}.should_not be_include(@teacher)
     end
   end
-  
+
   describe "POST 'enroll_users'" do
     before :each do
       account = Account.default
@@ -575,13 +659,13 @@ describe CoursesController do
       post 'enroll_users', :course_id => @course.id, :user_list => "sam@yahoo.com"
       assert_unauthorized
     end
-    
+
     it "should not allow students to enroll people" do
       course_with_student_logged_in(:active_all => true)
       post 'enroll_users', :course_id => @course.id, :user_list => "\"Sam\" <sam@yahoo.com>, \"Fred\" <fred@yahoo.com>"
       assert_unauthorized
     end
-    
+
     it "should enroll people" do
       course_with_teacher_logged_in(:active_all => true)
       post 'enroll_users', :course_id => @course.id, :user_list => "\"Sam\" <sam@yahoo.com>, \"Fred\" <fred@yahoo.com>"
@@ -634,38 +718,123 @@ describe CoursesController do
       @course.observers.map{|s| s.name}.should be_include("Sam")
       @course.observers.map{|s| s.name}.should be_include("Fred")
     end
-    
+
+    it "will use json for limit_privileges_to_course_section param" do
+      course_with_teacher_logged_in(:active_all => true)
+      post 'enroll_users', :course_id => @course.id,
+        :user_list => "\"Sam\" <sam@yahoo.com>",
+        :enrollment_type => 'TeacherEnrollment',
+        :limit_privileges_to_course_section => true
+      response.should be_success
+      run_jobs
+      enrollment = @course.reload.teachers.select { |t| t.name == 'Sam' }.
+        first.enrollments.first
+      enrollment.limit_privileges_to_course_section.should == true
+    end
   end
-  
+
+  describe "POST create" do
+    before do
+      @account = Account.default
+      custom_account_role 'lamer', :account => @account
+      @account.role_overrides.create! :permission => 'manage_courses', :enabled => true,
+                                      :enrollment_type => 'lamer'
+      user
+      @account.add_user @user, 'lamer'
+      user_session @user
+    end
+
+    it "should log create course event" do
+      course = @account.courses.build({
+        :name => "Course Name",
+        :lock_all_announcements => true
+      })
+      changes = course.changes
+      changes.delete("settings")
+      changes["lock_all_announcements"] = [ nil, true ]
+
+      Auditors::Course.expects(:record_created).with(anything, anything, changes)
+
+      post 'create', { :account_id => @account.id, :course =>
+          { :name => course.name, :lock_all_announcements => true } }
+    end
+  end
+
   describe "PUT 'update'" do
     it "should require authorization" do
       course_with_teacher(:active_all => true)
       put 'update', :id => @course.id, :course => {:name => "new course name"}
       assert_unauthorized
     end
-    
+
     it "should not let students update the course details" do
       course_with_student_logged_in(:active_all => true)
       put 'update', :id => @course.id, :course => {:name => "new course name"}
       assert_unauthorized
     end
-    
+
     it "should update course details" do
       course_with_teacher_logged_in(:active_all => true)
       put 'update', :id => @course.id, :course => {:name => "new course name"}
       assigns[:course].should_not be_nil
       assigns[:course].should eql(@course)
     end
-    
+
     it "should allow sending events" do
       course_with_teacher_logged_in(:active_all => true)
       put 'update', :id => @course.id, :course => {:event => "complete"}
       assigns[:course].should_not be_nil
       assigns[:course].state.should eql(:completed)
     end
+
+    it "should lock active course announcements" do
+      course_with_teacher_logged_in(:active_all => true)
+      active_announcement  = @course.announcements.create!(:title => 'active', :message => 'test')
+      delayed_announcement = @course.announcements.create!(:title => 'delayed', :message => 'test')
+      deleted_announcement = @course.announcements.create!(:title => 'deleted', :message => 'test')
+
+      delayed_announcement.workflow_state  = 'post_delayed'
+      delayed_announcement.delayed_post_at = Time.now + 3.weeks
+      delayed_announcement.save!
+
+      deleted_announcement.destroy
+
+      put 'update', :id => @course.id, :course => { :lock_all_announcements => 1 }
+      assigns[:course].lock_all_announcements.should be_true
+
+      active_announcement.reload.should be_locked
+      delayed_announcement.reload.should be_post_delayed
+      deleted_announcement.reload.should be_deleted
+    end
+
+    it "should log update course event" do
+      course_with_teacher_logged_in( :active_all => true )
+      @course.lock_all_announcements = true
+      @course.save!
+
+      changes = {
+        "name" => [ @course.name, "new course name" ],
+        "lock_all_announcements" => [ true, false ]
+      }
+
+      Auditors::Course.expects(:record_updated).with(anything, anything, changes)
+
+      put 'update', :id => @course.id, :course => {
+        :name => changes["name"].last,
+        :lock_all_announcements => false
+      }
+    end
+
+    it "should update its lock_all_announcements setting" do
+      course_with_teacher_logged_in(:active_all => true)
+      @course.lock_all_announcements = true
+      @course.save!
+      put 'update', :id => @course.id, :course => { :lock_all_announcements => 0 }
+      assigns[:course].lock_all_announcements.should be_false
+    end
   end
 
-  describe "POST unconclude" do
+  describe "POST 'unconclude'" do
     it "should unconclude the course" do
       course_with_teacher_logged_in(:active_all => true)
       delete 'destroy', :id => @course.id, :event => 'conclude'
@@ -737,7 +906,7 @@ describe CoursesController do
       @enrollment.update_attribute(:self_enrolled, true)
 
       post 'self_unenrollment', :course_id => @course.id, :self_unenrollment => 'abc'
-      response.status.should =~ /400 Bad Request/
+      assert_status(400)
       @enrollment.reload
       @enrollment.should be_active
     end
@@ -746,7 +915,7 @@ describe CoursesController do
       course_with_student_logged_in(:active_all => true)
 
       post 'self_unenrollment', :course_id => @course.id, :self_unenrollment => @enrollment.uuid
-      response.status.should =~ /400 Bad Request/
+      assert_status(400)
       @enrollment.reload
       @enrollment.should be_active
     end
@@ -756,7 +925,7 @@ describe CoursesController do
     it 'should check for authorization' do
       course_with_student_logged_in :active_all => true
       get 'sis_publish_status', :course_id => @course.id
-      response.status.should =~ /401 Unauthorized/
+      assert_status(401)
     end
 
     it 'should not try and publish grades' do
@@ -790,7 +959,7 @@ describe CoursesController do
       get 'sis_publish_status', :course_id => @course.id
       response.should be_success
       response_body = json_parse(response.body)
-      response_body["sis_publish_statuses"]["Published"].sort!{|x,y|x["id"] <=> y["id"]}
+      response_body["sis_publish_statuses"]["Published"].sort_by!{|x|x["id"]}
       response_body.should == {
           "sis_publish_overall_status" => "error",
           "sis_publish_statuses" => {
@@ -829,13 +998,12 @@ describe CoursesController do
         enrollment.save!
       end
 
-      server, server_thread, post_lines = start_test_http_server
       @plugin = Canvas::Plugin.find!('grade_export')
       @ps = PluginSetting.new(:name => @plugin.id, :settings => @plugin.default_settings)
       @ps.posted_settings = @plugin.default_settings.merge({
           :format_type => "instructure_csv",
           :wait_for_success => "no",
-          :publish_endpoint => "http://localhost:#{server.addr[1]}/endpoint"
+          :publish_endpoint => "http://localhost/endpoint"
         })
       @ps.save!
 
@@ -849,13 +1017,12 @@ describe CoursesController do
       a1.grade_student(students[1].user, { :grade => "6", :grader => @teacher })
       a2.grade_student(students[1].user, { :grade => "7", :grader => @teacher })
 
+      SSLCommon.expects(:post_data).once
       post "publish_to_sis", :course_id => @course.id
-
-      server_thread.join
 
       response.should be_success
       response_body = json_parse(response.body)
-      response_body["sis_publish_statuses"]["Published"].sort!{|x,y|x["id"] <=> y["id"]}
+      response_body["sis_publish_statuses"]["Published"].sort_by!{|x|x["id"]}
       response_body.should == {
           "sis_publish_overall_status" => "published",
           "sis_publish_statuses" => {
@@ -884,6 +1051,7 @@ describe CoursesController do
       get 'public_feed', :format => 'atom', :feed_code => @enrollment.feed_code
       feed = Atom::Feed.load_feed(response.body) rescue nil
       feed.should_not be_nil
+      feed.entries.should_not be_empty
       feed.links.first.rel.should match(/self/)
       feed.links.first.href.should match(/http:\/\//)
     end
@@ -894,6 +1062,16 @@ describe CoursesController do
       feed.should_not be_nil
       feed.entries.should_not be_empty
       feed.entries.all?{|e| e.authors.present?}.should be_true
+    end
+
+    it "should not include unpublished assignments or discussions" do
+      discussion_topic_model(:context => @course)
+      @assignment.unpublish
+      @topic.unpublish!
+      get 'public_feed', :format => 'atom', :feed_code => @enrollment.feed_code
+      feed = Atom::Feed.load_feed(response.body) rescue nil
+      feed.should_not be_nil
+      feed.entries.should be_empty
     end
   end
 
@@ -909,16 +1087,142 @@ describe CoursesController do
       course_with_ta(:active_all => true)
       user_session(@user)
       post 'reset_content', :course_id => @course.id
-      response.status.to_i.should == 401
+      assert_status(401)
       @course.reload.should be_available
     end
   end
 
-  describe 'GET statistics' do
-    it 'does not break using new student_ids method from course' do
-      course_with_teacher_logged_in(:active_all => true)
-      get 'statistics', :format => 'json', :course_id => @course.id
-      response.status.to_i.should == 200
+  context "changed_settings" do
+    let(:controller) { CoursesController.new }
+
+    it "should have changed settings for a new course" do
+      course = Course.new
+      course.hide_final_grade = false
+      course.hide_distribution_graphs = false
+      course.assert_defaults
+      changes = course.changes
+
+      changed_settings = controller.changed_settings(changes, course.settings)
+
+      changes.merge!(
+        hide_final_grade: false,
+        hide_distribution_graphs: false
+      )
+
+      changed_settings.should == changes
+    end
+
+    it "should have changed settings for an updated course" do
+      course = Account.default.courses.create!
+      old_values = course.settings
+
+      course.hide_final_grade = false
+      course.hide_distribution_graphs = false
+      changes = course.changes
+
+      changed_settings = controller.changed_settings(changes, course.settings, old_values)
+
+      changes.merge!(
+        hide_final_grade: false,
+        hide_distribution_graphs: false
+      )
+
+      changed_settings.should == changes
+    end
+  end
+
+  describe "quotas" do
+    context "with :manage_storage_quotas" do
+      before do
+        @account = Account.default
+        account_admin_user :account => @account
+        user_session @user
+      end
+
+      describe "create" do
+        it "should set storage_quota" do
+          post 'create', { :account_id => @account.id, :course =>
+              { :name => 'xyzzy', :storage_quota => 111.megabytes } }
+          @course = @account.courses.find_by_name('xyzzy')
+          @course.storage_quota.should == 111.megabytes
+        end
+
+        it "should set storage_quota_mb" do
+          post 'create', { :account_id => @account.id, :course =>
+              { :name => 'xyzpdq', :storage_quota_mb => 111 } }
+          @course = @account.courses.find_by_name('xyzpdq')
+          @course.storage_quota_mb.should == 111
+        end
+      end
+
+      describe "update" do
+        before do
+          @course = @account.courses.create!
+        end
+
+        it "should set storage_quota" do
+          post 'update', { :id => @course.id, :course =>
+            { :storage_quota => 111.megabytes } }
+          @course.reload.storage_quota.should == 111.megabytes
+        end
+
+        it "should set storage_quota_mb" do
+          post 'update', { :id => @course.id, :course =>
+            { :storage_quota_mb => 111 } }
+          @course.reload.storage_quota_mb.should == 111
+        end
+      end
+    end
+
+    context "without :manage_storage_quotas" do
+      describe "create" do
+        before do
+          @account = Account.default
+          custom_account_role 'lamer', :account => @account
+          @account.role_overrides.create! :permission => 'manage_courses', :enabled => true,
+                                          :enrollment_type => 'lamer'
+          user
+          @account.add_user @user, 'lamer'
+          user_session @user
+        end
+
+        it "should ignore storage_quota" do
+          post 'create', { :account_id => @account.id, :course =>
+              { :name => 'xyzzy', :storage_quota => 111.megabytes } }
+          @course = @account.courses.find_by_name('xyzzy')
+          @course.storage_quota.should == @account.default_storage_quota
+        end
+
+        it "should ignore storage_quota_mb" do
+          post 'create', { :account_id => @account.id, :course =>
+              { :name => 'xyzpdq', :storage_quota_mb => 111 } }
+          @course = @account.courses.find_by_name('xyzpdq')
+          @course.storage_quota_mb.should == @account.default_storage_quota / 1.megabyte
+        end
+      end
+
+      describe "update" do
+        before do
+          @account = Account.default
+          course_with_teacher_logged_in(:account => @account, :active_all => true)
+        end
+
+        it "should ignore storage_quota" do
+          post 'update', { :id => @course.id, :course =>
+              { :public_description => 'wat', :storage_quota => 111.megabytes } }
+          @course.reload
+          @course.public_description.should == 'wat'
+          @course.storage_quota.should == @account.default_storage_quota
+        end
+
+        it "should ignore storage_quota_mb" do
+          post 'update', { :id => @course.id, :course =>
+              { :public_description => 'wat', :storage_quota_mb => 111 } }
+          @course.reload
+          @course.public_description.should == 'wat'
+          @course.storage_quota_mb.should == @account.default_storage_quota / 1.megabyte
+        end
+      end
     end
   end
 end

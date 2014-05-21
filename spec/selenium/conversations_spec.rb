@@ -1,8 +1,11 @@
 require File.expand_path(File.dirname(__FILE__) + '/helpers/conversations_common')
 
 describe "conversations" do
-  it_should_behave_like "in-process server selenium tests"
-  it_should_behave_like "conversations selenium tests"
+  include_examples "in-process server selenium tests"
+
+  before (:each) do
+    conversation_setup
+  end
 
   it "should not allow double form submissions" do
     new_message = 'new conversation message'
@@ -14,7 +17,7 @@ describe "conversations" do
     expect {
       f('#create_message_form .conversation_body').send_keys(new_message)
       5.times { submit_form('#create_message_form form') rescue nil }
-      keep_trying_until { get_conversations.size == 1 }
+      assert_message_status("sent", new_message[0, 10])
     }.to change(ConversationMessage, :count).by(1)
   end
 
@@ -29,9 +32,10 @@ describe "conversations" do
       @me = @user
       5.times { conversation(@me, user, :workflow_state => 'unread') }
       get "/conversations/unread"
-      c = get_conversations.first
-      c.click
-      c.should have_class('unread') # not marked immediately
+      ce = get_conversations.first
+      ce.should have_class('unread') # not marked immediately
+      ce.click
+      wait_for_ajaximations
       @me.conversations.unread.size.should == 5
       keep_trying_until do
         get_conversations.first.should_not have_class('unread')
@@ -46,11 +50,11 @@ describe "conversations" do
     it "should not open the conversation when the gear menu is clicked" do
       create_conversation
       wait_for_ajaximations
-      f('.al-options').should_not be_displayed
+      f('#menu-wrapper .al-options').should be_nil
       driver.execute_script "$('.admin-link-hover-area').addClass('active')"
       f('.admin-links button').click
       wait_for_ajaximations
-      f('.al-options').should be_displayed
+      f('#menu-wrapper .al-options').should be_displayed
       f('.messages').should_not be_displayed
     end
 
@@ -117,6 +121,44 @@ describe "conversations" do
     end
   end
 
+  context "New message... link" do
+    before :each do
+      @me = @user
+      @other = user(:name => 'Some OtherDude')
+      @course.enroll_student(@other)
+      conversation(@me, @other, :workflow_state => 'unread')
+      @participant_me = @conversation
+      @convo = @participant_me.conversation
+      @convo.add_message(@other, "Hey bud!")
+      @convo.add_message(@me, "Howdy friend!")
+      get '/conversations'
+      f('.unread').click
+      wait_for_ajaximations
+    end
+
+    it "should not display on my own message" do
+      # Hover over own message
+      driver.execute_script("$('.message.self:first .send_private_message').focus()")
+      f(".message.self .send_private_message").should_not be_displayed
+    end
+
+    it "should display on messages from others" do
+      # Hover over the message from the other writer to display link
+      # This spec fails locally in isolation and in this context block.
+      driver.execute_script("$('.message.other .send_private_message').focus()")
+      f(".message.other .send_private_message").should be_displayed
+    end
+
+    it "should start new message to the user" do
+      f(".message.other .send_private_message").click()
+      wait_for_ajaximations
+      # token gets added after brief delay
+      sleep(0.4)
+      # create "token" with the 'other' user
+      f("#create_message_form .token_input ul").text().should == @other.name
+    end
+  end
+
   context 'messages' do
     before(:each) do
       @me = @user
@@ -134,11 +176,10 @@ describe "conversations" do
       wait_for_ajaximations
       f('.selectable').click
       f('#forward_body').send_keys(forward_body_text)
-      f('.btn-primary').click
+      f('.ui-dialog-buttonset > .btn-primary').click
       wait_for_ajaximations
-      keep_trying_until {
-        f('.messages .message').should include_text(forward_body_text)
-      }
+      expect_new_page_load { get '/conversations/sent' }
+      f('.conversations li.read').should include_text(forward_body_text)
     end
 
     it "should delete a message" do
@@ -194,8 +235,11 @@ describe "conversations" do
         new_conversation(:message => media_comment_type)
 
         message = submit_message_form(:media_comment => [mo.media_id, mo.media_type])
-        message = "#message_#{message.id}"
 
+        expect_new_page_load { get '/conversations/sent' }
+        f('.conversations li').click
+        wait_for_ajaximations
+        message = "#message_#{message.id}"
         ff("#{message} .message_attachments li").size.should == 1
         f("#{message} .message_attachments li a .title").text.should == mo.title
       end
@@ -256,7 +300,7 @@ describe "conversations" do
       new_conversation
       add_recipient("student1")
 
-      submit_message_form(:message => "ohai", :add_recipient => false).should_not be_nil
+      submit_message_form(:message => "ohai", :add_recipient => false, :existing_conversation => true).should_not be_nil
     end
   end
 
@@ -306,9 +350,37 @@ describe "conversations" do
       submit_form('#create_message_form')
       wait_for_ajaximations
       run_jobs
+      expect_new_page_load { get "/conversations/sent" }
+      wait_for_ajaximations
       f('.others').click
       f('#others_popup').should be_displayed
       ff('#others_popup li').count.should == (@conversation_students.count - 2) # - 2 because the first 2 show up in the conversation summary
+    end
+  end
+
+  context "help menu" do
+    it "should switch to new conversations and redirect" do
+      site_admin_logged_in
+      @user.watched_conversations_intro
+      @user.save
+      new_conversation
+      f('#help-btn').click
+      expect_new_page_load { fj('#try-new-conversations-menu-item').click }
+      f('#inbox').should be_nil # #inbox is in the old conversations ui and not the new ui
+      driver.execute_script("$('#help-btn').click()") #selenium.clik() not working in this case...
+      expect_new_page_load {  fj('#switch-to-old-conversations-menu-item').click }
+      f('#inbox').should be_displayed
+    end
+
+    it "should show the intro" do
+      site_admin_logged_in
+      @user.watched_conversations_intro
+      @user.save
+      new_conversation
+      f('#help-btn').click
+      fj('#conversations-intro-menu-item').click
+      wait_for_ajaximations
+      ff('#conversations_intro').last.should be_displayed
     end
   end
 end

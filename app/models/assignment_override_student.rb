@@ -20,7 +20,7 @@ class AssignmentOverrideStudent < ActiveRecord::Base
   belongs_to :assignment
   belongs_to :assignment_override
   belongs_to :user
-  belongs_to :quiz
+  belongs_to :quiz, class_name: 'Quizzes::Quiz'
 
   attr_accessible :user
 
@@ -40,7 +40,7 @@ class AssignmentOverrideStudent < ActiveRecord::Base
   end
 
   validate :user do |record|
-    if record.user && record.context_id && record.user.student_enrollments.scoped(:conditions => {:course_id => record.context_id}).first.nil?
+    if record.user && record.context_id && !record.user.student_enrollments.where(:course_id => record.context_id).exists?
       record.errors.add :user, "is not in the assignment's course"
     end
   end
@@ -53,8 +53,10 @@ class AssignmentOverrideStudent < ActiveRecord::Base
 
   def context_id
     if quiz
+      quiz.reload if quiz.id != quiz_id
       quiz.context_id
     elsif assignment
+      assignment.reload if assignment.id != assignment_id
       assignment.context_id
     end
   end
@@ -63,7 +65,7 @@ class AssignmentOverrideStudent < ActiveRecord::Base
   def default_values
     if assignment_override
       self.assignment_id = assignment_override.assignment_id
-      self.quiz_id       = assignment_override.quiz_id
+      self.quiz_id = assignment_override.quiz_id
     end
   end
   protected :default_values

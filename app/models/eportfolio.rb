@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2013 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -25,6 +25,7 @@ class Eportfolio < ActiveRecord::Base
   has_many :attachments, :as => :context
   belongs_to :user
   validates_presence_of :user_id
+  validates_length_of :name, :maximum => maximum_string_length, :allow_blank => true
 
   workflow do
     state :active
@@ -34,15 +35,15 @@ class Eportfolio < ActiveRecord::Base
   alias_method :destroy!, :destroy
   def destroy
     self.workflow_state = 'deleted'
-    self.deleted_at = Time.now
+    self.deleted_at = Time.now.utc
     self.save
   end
   
-  named_scope :active, :conditions => ['eportfolios.workflow_state != ?', 'deleted']
+  scope :active, where("eportfolios.workflow_state<>'deleted'")
 
   before_create :assign_uuid
   def assign_uuid
-    self.uuid ||= AutoHandle.generate_securish_uuid
+    self.uuid ||= CanvasUuid::Uuid.generate_securish_uuid
   end
   protected :assign_uuid
 
@@ -62,7 +63,11 @@ class Eportfolio < ActiveRecord::Base
   
   def setup_defaults
     cat = self.eportfolio_categories.create(:name => t(:first_category, "Home")) if self.eportfolio_categories.empty?
-    entry = cat.eportfolio_entries.create(:eportfolio => self, :name => t('first_entry.title', "Welcome"), :content => t('first_entry.content', "Nothing entered yet")) if cat && cat.eportfolio_entries.empty?
+    if cat && cat.eportfolio_entries.empty?
+      entry = cat.eportfolio_entries.build(:eportfolio => self, :name => t('first_entry.title', "Welcome"))
+      entry.content = t('first_entry.content', "Nothing entered yet")
+      entry.save
+    end
     cat
   end
   def self.serialization_excludes; [:uuid]; end

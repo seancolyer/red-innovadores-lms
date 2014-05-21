@@ -1,6 +1,6 @@
 require File.expand_path(File.dirname(__FILE__) + '/common')
 require File.expand_path(File.dirname(__FILE__) + '/helpers/files_common')
-require File.expand_path(File.dirname(__FILE__) + '/helpers/files_specs')
+#require File.expand_path(File.dirname(__FILE__) + '/helpers/files_specs')
 
 
 def add_folders(name = 'new folder', number_to_add = 1)
@@ -25,13 +25,12 @@ end
 
 def add_file(file_fullpath)
   attachment_field = keep_trying_until do
-    fj('#add_file_link').click # fj to avoid selenium caching
+    driver.execute_script "$('.add_file_link').click()"
     wait_for_ajaximations
     attachment_field = fj('#attachment_uploaded_data')
     attachment_field.should be_displayed
     attachment_field
   end
-  wait_for_ajaximations
   attachment_field.send_keys(file_fullpath)
   wait_for_ajaximations
   f('.add_file_form').submit
@@ -50,9 +49,9 @@ end
 
 def file_setup
   sleep 5
-  @a_filename, a_fullpath, a_data = get_file("a_file.txt")
-  @b_filename, b_fullpath, b_data = get_file("b_file.txt")
-  @c_filename, c_fullpath, c_data = get_file("c_file.txt")
+  @a_filename, a_fullpath, _, @a_tempfile = get_file("a_file.txt")
+  @b_filename, b_fullpath, _, @b_tempfile = get_file("b_file.txt")
+  @c_filename, c_fullpath, _, @c_tempfile = get_file("c_file.txt")
 
   add_file(a_fullpath)
   add_file(c_fullpath)
@@ -60,16 +59,18 @@ def file_setup
 end
 
 describe "common file behaviors" do
-  it_should_behave_like "forked server selenium tests"
+  include_examples "in-process server selenium tests"
 
   def add_file(file_fullpath)
     attachment_field = keep_trying_until do
-      fj('#add_file_link').click # fj to avoid selenium caching
+      driver.execute_script "$('.add_file_link').click()"
+      wait_for_ajaximations
       attachment_field = fj('#attachment_uploaded_data')
       attachment_field.should be_displayed
       attachment_field
     end
     attachment_field.send_keys(file_fullpath)
+    wait_for_ajaximations
     f('.add_file_form').submit
     wait_for_ajaximations
     wait_for_js
@@ -138,10 +139,13 @@ describe "common file behaviors" do
 
     it "should ignore file name case when alphabetizing" do
       sleep 5 # page does a weird load twice which is causing selenium failures so we sleep and wait for the page
-      amazing_filename, amazing_fullpath, amazing_data = get_file("amazing_file.txt")
-      dog_filename, dog_fullpath, dog_data = get_file("Dog_file.txt")
+      amazing_filename, amazing_fullpath, _, amazing_tempfile = get_file("amazing_file.txt")
+      dog_filename, dog_fullpath, _, dog_tempfile = get_file("Dog_file.txt")
       file_paths = [dog_fullpath, amazing_fullpath]
-      file_paths.each { |name| add_file(name) }
+      file_paths.each do
+        |name| add_file(name)
+        wait_for_ajaximations
+      end
       files = ff('#files_content .file')
       files.first.should include_text('amazing')
       files.last.should include_text('Dog')
@@ -164,7 +168,7 @@ describe "common file behaviors" do
 end
 
 describe "files without s3 and forked tests" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   before (:each) do
     @folder_name = "my folder"
@@ -214,44 +218,8 @@ describe "files without s3 and forked tests" do
   end
 end
 
-
-describe "collaborations folder in files menu" do
-  it_should_behave_like "in-process server selenium tests"
-
-  before (:each) do
-    user_with_pseudonym(:active_user => true)
-    course_with_teacher(:user => @user, :active_course => true, :active_enrollment => true)
-    group_category = @course.group_categories.create(:name => "groupage")
-    @group = group_category.groups.create!(:name => "group1", :context => @course)
-  end
-
-  def load_collab_folder
-    get "/groups/#{@group.id}/files"
-    message_node = keep_trying_until do
-      f("li.collaborations span.name").click
-      f("ul.files_content li.message")
-    end
-    message_node.text
-  end
-
-  it "should show add collaboration paragraph to teacher of a course group" do
-    create_session(@pseudonym, false)
-    message = load_collab_folder
-    message.should include_text("New collaboration")
-  end
-
-  it "should show add collaboration paragraph to participating user" do
-    user_with_pseudonym(:active_user => true)
-    student_in_course(:user => @user, :active_enrollment => true)
-    create_session(@pseudonym, false)
-    @group.add_user(@user, 'accepted')
-    message = load_collab_folder
-    message.should include_text("New collaboration")
-  end
-end
-
 describe "course files" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   it "should not show root folder files in the collaborations folder when there is a collaboration" do
     course_with_teacher_logged_in
@@ -280,5 +248,68 @@ describe "course files" do
     end
 
     file_elements.first.text.should == a.name
+  end
+end
+
+describe "scribd re-rendering" do
+  include_examples "in-process server selenium tests"
+
+  before do
+    ScribdAPI.stubs(:config).returns({ :key => "key", :secret => "what" })
+  end
+
+  context "with missing scribd_doc" do
+    before do
+      course_with_student_logged_in :active_all => true
+      @attachment = scribdable_attachment_model :context => @course, :workflow_state => 'deleted', :display_name => 'scribd-test-file.pdf'
+      @attachment.folder = Folder.root_folders(@course).first
+      @attachment.save!
+    end
+
+    context "with google previews enabled" do
+      it "should kick off a scribd render when the file is previewed" do
+        get "/courses/#{@course.id}/files"
+        wait_for_ajaximations
+        file_item = nil
+        keep_trying_until { file_item = f("#files_structure span[title='#{@attachment.display_name}']") }
+        file_item.click
+        wait_for_ajax_requests
+        f('#doc_preview_holder iframe').should_not be_nil
+        keep_trying_until { Delayed::Job.find_by_tag('Attachment#submit_to_scribd!') }
+        @attachment.reload.last_inline_view.should > 1.minute.ago
+      end
+    end
+
+    context "with google previews disabled" do
+      before do
+        @account = @course.account
+        @account.allowed_services = "-google_docs_previews"
+        @account.save!
+      end
+
+      it "should re-render a deleted scribd document" do
+        get "/courses/#{@course.id}/files"
+        wait_for_ajaximations
+        file_item = nil
+        keep_trying_until { file_item = f("#files_structure span[title='#{@attachment.display_name}']") }
+        file_item.click
+        wait_for_ajax_requests
+        f('#doc_preview_holder').text.should be_include "try again later"
+        keep_trying_until { Delayed::Job.find_by_tag('Attachment#submit_to_scribd!') }
+      end
+
+      it "should display a message if the scribd document is processing" do
+        @attachment.workflow_state = 'processing'
+        @attachment.save!
+        get "/courses/#{@course.id}/files"
+        wait_for_ajaximations
+        file_item = nil
+        keep_trying_until { file_item = f("#files_structure span[title='#{@attachment.display_name}']") }
+        file_item.click
+        wait_for_ajax_requests
+        f('#doc_preview_holder').text.should be_include "being processed"
+        Delayed::Job.find_by_tag('Attachment#submit_to_scribd!').should be_nil
+      end
+    end
   end
 end

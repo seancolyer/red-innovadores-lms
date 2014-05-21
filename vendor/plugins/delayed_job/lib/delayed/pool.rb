@@ -87,7 +87,13 @@ class Pool
     say "Started job master", :info
     $0 = "delayed_jobs_pool"
     read_config(options[:config_file])
-    unlock_orphaned_jobs
+
+    # fork to handle unlocking (to prevent polluting the parent with worker objects)
+    unlock_pid = fork_with_reconnects do
+      unlock_orphaned_jobs
+    end
+    Process.wait unlock_pid
+
     spawn_periodic_auditor
     spawn_all_workers
     say "Workers spawned"
@@ -121,7 +127,7 @@ class Pool
 
     unlocked_jobs = Delayed::Job.unlock_orphaned_jobs(pid)
     say "Unlocked #{unlocked_jobs} orphaned jobs" if unlocked_jobs > 0
-    ActiveRecord::Base.connection_handler.clear_all_connections!
+    ActiveRecord::Base.connection_handler.clear_all_connections! unless Rails.env.test?
   end
 
   def spawn_all_workers
@@ -142,13 +148,21 @@ class Pool
       worker = Delayed::Worker.new(worker_config)
     end
 
-    pid = fork do
-      Canvas.reconnect_redis
-      Delayed::Job.reconnect!
+    pid = fork_with_reconnects do
       Delayed::Periodic.load_periodic_jobs_config
       worker.start
     end
     workers[pid] = worker
+  end
+
+  # child processes need to reconnect so they don't accidentally share redis or
+  # db connections with the parent
+  def fork_with_reconnects
+    fork do
+      Canvas.reconnect_redis
+      Delayed::Job.reconnect!
+      yield
+    end
   end
 
   def spawn_periodic_auditor
@@ -172,7 +186,7 @@ class Pool
   end
 
   def schedule_periodic_audit
-    pid = fork do
+    pid = fork_with_reconnects do
       # we want to avoid db connections in the main pool process
       $0 = "delayed_periodic_audit_scheduler"
       Delayed::Periodic.load_periodic_jobs_config
@@ -190,7 +204,11 @@ class Pool
           say "ran auditor: #{worker}"
         else
           say "child exited: #{child}, restarting", :info
-          unlock_orphaned_jobs(worker, child)
+          # fork to handle unlocking (to prevent polluting the parent with worker objects)
+          unlock_pid = fork_with_reconnects do
+            unlock_orphaned_jobs(worker, child)
+          end
+          Process.wait unlock_pid
           spawn_worker(worker.config)
         end
       end
@@ -199,9 +217,10 @@ class Pool
 
   def tail_rails_log
     return if !@options[:tail_logs]
+    return if !Rails.logger.respond_to?(:log_path)
     Rails.logger.auto_flushing = true if Rails.logger.respond_to?(:auto_flushing=)
     Thread.new do
-      f = File.open(Rails.configuration.log_path.presence || (Rails.root+"log/#{Rails.env}.log"), 'r')
+      f = File.open(Rails.logger.log_path, 'r')
       f.seek(0, IO::SEEK_END)
       loop do
         content = f.read

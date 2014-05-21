@@ -1,9 +1,11 @@
 require [
+  'jquery'
   'quiz_arrows'
   'quizzes'
   'supercalc'
   'quiz_rubric'
-], (CreateQuizArrows) ->
+], ($, CreateQuizArrows) ->
+
   $('#show_question_details').on 'click', (e)->
     # Create the quiz arrows
     if $(this).is(':checked')

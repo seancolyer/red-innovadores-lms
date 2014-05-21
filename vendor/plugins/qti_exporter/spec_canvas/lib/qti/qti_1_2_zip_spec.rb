@@ -1,4 +1,4 @@
-require File.dirname(__FILE__) + '/../../qti_helper'
+require File.expand_path(File.dirname(__FILE__) + '/../../qti_helper')
 if Qti.migration_executable
   describe "QTI 1.2 zip with id prepender value" do
     before(:all) do
@@ -21,7 +21,7 @@ if Qti.migration_executable
     end
 
     after(:all) do
-      ActiveRecord::Base.all_models.each { |m| truncate_table(m) }
+      truncate_all_tables
       @converter.delete_unzipped_archive
       if File.exists?(@dir)
         FileUtils::rm_rf(@dir)

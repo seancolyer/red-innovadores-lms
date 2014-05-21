@@ -1,11 +1,15 @@
 require [
+  'jquery'
+
   # true modules that we manage in this file
   'Backbone'
   'compiled/widget/courseList'
   'compiled/helpDialog'
+  'compiled/tours'
 
   # modules that do their own thing on every page that simply need to
   # be required
+  'translations/_core'
   'translations/_core_en'
   'jquery.ajaxJSON'
   'vendor/firebugx'
@@ -19,6 +23,7 @@ require [
   'compiled/license_help'
   'compiled/behaviors/ujsLinks'
   'compiled/behaviors/admin-links'
+  'compiled/behaviors/activate'
   'compiled/behaviors/elementToggler'
   # uncomment these to turn on collection pinning and voting
   # 'compiled/behaviors/upvote-item'
@@ -29,7 +34,6 @@ require [
 
   # other stuff several bundles use
   'media_comments'
-  'order'
   'jqueryui/effects/drop'
   'jqueryui/progressbar'
   'jqueryui/tabs'
@@ -45,9 +49,10 @@ require [
   'vendor/jquery.pageless'
   'vendor/jquery.scrollTo'
   'compiled/badge_counts'
-], (Backbone, courseList, helpDialog) ->
+], ($, Backbone, courseList, helpDialog, tours) ->
   courseList.init()
   helpDialog.initTriggers()
+  tours.init()
 
   # Make the font-based icons work in IE8,
   # it needs to be told to redraw pseudo elements on page load
@@ -68,4 +73,3 @@ require [
   $('body').on 'click', '[data-pushstate]', (event) ->
     event.preventDefault()
     Backbone.history.navigate $(this).attr('href'), yes
-

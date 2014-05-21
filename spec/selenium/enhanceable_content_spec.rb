@@ -1,12 +1,13 @@
 require File.expand_path(File.dirname(__FILE__) + '/common')
 
 describe "enhanceable_content" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   it "should automatically enhance content using jQuery UI" do
+    stub_kaltura
     course_with_teacher_logged_in
 
-    page = @course.wiki.wiki_page
+    page = @course.wiki.front_page
     page.body = %{
       <div id="dialog_for_link1" class="enhanceable_content dialog">dialog for link 1</div>
       <a href="#dialog_for_link1" id="link1">link 1</a>
@@ -63,6 +64,8 @@ describe "enhanceable_content" do
             Lorem ipsum dolor sit amet, consectetuer adipiscing elit, sed diam nonummy nibh euismod tincidunt ut laoreet dolore magna aliquam erat volutpat.
         </div>
       </div>
+
+      <a id="media_comment_0_deadbeef" class="instructure_file_link instructure_video_link" title="Video.mp4" href="/courses/1/files/1/download?wrap=1">Video</a>
     }
     page.save!
 
@@ -96,7 +99,7 @@ describe "enhanceable_content" do
     divs[0].should be_displayed
     divs[1].should_not be_displayed
     headers[1].click
-    sleep 1
+    wait_for_ajaximations
     headers[0].should have_class('ui-state-default')
     headers[1].should have_class('ui-state-active')
     divs[0].should_not be_displayed
@@ -113,6 +116,8 @@ describe "enhanceable_content" do
     headers[1].should have_class('ui-state-default')
     divs[0].should be_displayed
     divs[1].should_not be_displayed
+
+    f('#media_comment_0_deadbeef span.media_comment_thumbnail').should_not be_nil
   end
 end
 

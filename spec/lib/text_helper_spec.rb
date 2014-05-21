@@ -140,46 +140,6 @@ describe TextHelper do
     end
   end
 
-  context "format_message" do
-    it "should detect and linkify URLs" do
-      str = th.format_message("click here: (http://www.instructure.com) to check things out\nnewline").first
-      html = Nokogiri::HTML::DocumentFragment.parse(str)
-      link = html.css('a').first
-      link['href'].should == "http://www.instructure.com"
-
-      str = th.format_message("click here: http://www.instructure.com\nnewline").first
-      html = Nokogiri::HTML::DocumentFragment.parse(str)
-      link = html.css('a').first
-      link['href'].should == "http://www.instructure.com"
-
-      str = th.format_message("click here: www.instructure.com/a/b?a=1&b=2\nnewline").first
-      html = Nokogiri::HTML::DocumentFragment.parse(str)
-      link = html.css('a').first
-      link['href'].should == "http://www.instructure.com/a/b?a=1&b=2"
-
-      str = th.format_message("click here: http://www.instructure.com/\nnewline").first
-      html = Nokogiri::HTML::DocumentFragment.parse(str)
-      link = html.css('a').first
-      link['href'].should == "http://www.instructure.com/"
-
-      str = th.format_message("click here: http://www.instructure.com/courses/1/wiki/informação").first
-      html = Nokogiri::HTML::DocumentFragment.parse(str)
-      link = html.css('a').first
-      link['href'].should == "http://www.instructure.com/courses/1/wiki/informa%C3%A7%C3%A3o"
-
-      str = th.format_message("click here: http://www.instructure.com/'onclick=alert(document.cookie)//\nnewline").first
-      html = Nokogiri::HTML::DocumentFragment.parse(str)
-      link = html.css('a').first
-      # we don't match parens in a url, so the link ends on the opening paren
-      link['href'].should == "http://www.instructure.com/%27onclick=alert"
-    end
-
-    it "should handle having the placeholder in the text body" do
-      str = th.format_message("this text has the placeholder #{TextHelper::AUTO_LINKIFY_PLACEHOLDER} embedded right in it.\nhttp://www.instructure.com/\n").first
-      str.should == "this text has the placeholder #{TextHelper::AUTO_LINKIFY_PLACEHOLDER} embedded right in it.<br/>\r\n<a href='http://www.instructure.com/'>http://www.instructure.com/</a><br/>\r"
-    end
-  end
-
   context "truncate_text" do
     it "should not split if max_length is exact text length" do
       str = "I am an exact length"
@@ -189,30 +149,14 @@ describe TextHelper do
     it "should split on multi-byte character boundaries" do
       str = "This\ntext\nhere\n获\nis\nutf-8"
       
-      # In ruby 1.8, unicode characters are counted as multiple characters when calculating length.  
-      # In ruby 1.9, a unicode character is still 1 character.  It seems to me the proper path here
-      # is to allow the counting to take it's course, as the real GOAL of this test is not to 
-      # split mid-unicode-character since that was possible in 1.8.
-
-      if RUBY_VERSION >= '1.9'
-        th.truncate_text(str, :max_length => 9).should ==  "This\nt..."
-        th.truncate_text(str, :max_length => 18).should == "This\ntext\nhere\n..."
-        th.truncate_text(str, :max_length => 19).should == "This\ntext\nhere\n获..."
-        th.truncate_text(str, :max_length => 20).should == "This\ntext\nhere\n获\n..."
-        th.truncate_text(str, :max_length => 21).should == "This\ntext\nhere\n获\ni..."
-        th.truncate_text(str, :max_length => 22).should == "This\ntext\nhere\n获\nis..."
-        th.truncate_text(str, :max_length => 23).should == "This\ntext\nhere\n获\nis\n..."
-        th.truncate_text(str, :max_length => 80).should == str
-      else
-        th.truncate_text(str, :max_length => 9).should ==  "This\nt..."
-        th.truncate_text(str, :max_length => 18).should == "This\ntext\nhere\n..."
-        th.truncate_text(str, :max_length => 19).should == "This\ntext\nhere\n..."
-        th.truncate_text(str, :max_length => 20).should == "This\ntext\nhere\n..."
-        th.truncate_text(str, :max_length => 21).should == "This\ntext\nhere\n获..."
-        th.truncate_text(str, :max_length => 22).should == "This\ntext\nhere\n获\n..."
-        th.truncate_text(str, :max_length => 23).should == "This\ntext\nhere\n获\ni..."
-        th.truncate_text(str, :max_length => 80).should == str
-      end
+      th.truncate_text(str, :max_length => 9).should ==  "This\nt..."
+      th.truncate_text(str, :max_length => 18).should == "This\ntext\nhere\n..."
+      th.truncate_text(str, :max_length => 19).should == "This\ntext\nhere\n获..."
+      th.truncate_text(str, :max_length => 20).should == "This\ntext\nhere\n获\n..."
+      th.truncate_text(str, :max_length => 21).should == "This\ntext\nhere\n获\ni..."
+      th.truncate_text(str, :max_length => 22).should == "This\ntext\nhere\n获\nis..."
+      th.truncate_text(str, :max_length => 23).should == "This\ntext\nhere\n获\nis\n..."
+      th.truncate_text(str, :max_length => 80).should == str
     end
 
     it "should split on words if specified" do
@@ -245,21 +189,6 @@ describe TextHelper do
     TextHelper.make_subject_reply_to('Re: ohai').should == 'Re: ohai'
   end
 
-  context ".html_to_text" do
-    it "should format links in markdown-like style" do
-      th.html_to_text("<a href='www.example.com'>Link</a>").should == "[Link](www.example.com)"
-      th.html_to_text("<a href='www.example.com'>www.example.com</a>").should == "www.example.com"
-    end
-
-    it "should turn images into urls" do
-      th.html_to_text("<img src='http://www.example.com/a'>").should == "http://www.example.com/a"
-    end
-
-    it "should insert newlines for ps and brs" do
-      th.html_to_text("Ohai<br>Text <p>paragraph of text.</p>End").should == "Ohai\n\nText paragraph of text.\n\nEnd"
-    end
-  end
-
   context "markdown" do
     context "safety" do
       it "should escape Strings correctly" do
@@ -272,7 +201,7 @@ describe TextHelper do
     context "i18n" do
       it "should automatically escape Strings" do
         th.mt(:foo, "We **don't** trust the following input: %{input}", :input => "`a` **b** _c_ ![d](e)\n# f\n + g\n - h").
-          should == "We <strong>don&#39;t</strong> trust the following input: `a` **b** _c_ ![d](e) # f + g - h"
+          should == "We <strong>don&#x27;t</strong> trust the following input: `a` **b** _c_ ![d](e) # f + g - h"
       end
 
       it "should not escape MarkdownSafeBuffers" do
@@ -328,58 +257,5 @@ Ad dolore andouille meatball irure, ham hock tail exercitation minim ribeye sint
           should == "<p>para1</p>\n\n<p>para2</p>"
       end
     end
-  end
-
-  it "should strip out invalid utf-8" do
-    test_strings = {
-      "hai\xfb" => "hai",
-      "hai\xfb there" => "hai there",
-      "hai\xfba" => "haia",
-      "hai\xfbab" => "haiab",
-      "hai\xfbabc" => "haiabc",
-      "hai\xfbabcd" => "haiabcd"
-    }
-  
-    test_strings.each do |input, output|
-      input = input.dup.force_encoding("UTF-8") if RUBY_VERSION >= '1.9'
-      TextHelper.strip_invalid_utf8(input).should == output
-    end
-  end
-
-  it "should recursively strip out invalid utf-8" do
-    pending("ruby 1.9 only") if RUBY_VERSION < "1.9.0"
-    qd = %{
- answers:
- - !map:HashWithIndifferentAccess
-   weight: 0
-   id: 1
-   text: one
-   migration_id: QUE_1
- - !map:HashWithIndifferentAccess
-   weight: 0
-   id: 2
-   html: ab&ecirc;cd.
-   text: "t\xEAwo"
-   migration_id: QUE_2
- - !map:HashWithIndifferentAccess
-   weight: 100
-   id: 4685
-   text: three
-   migration_id: QUE_0_7_6554E77AEBFE42C7B02DAE225141AB51_A2
- question_text: What is the answer
- position: 2
-    }.force_encoding('binary')
-    data = YAML.load(qd)
-    answer = data['answers'][1]['text']
-    answer.valid_encoding?.should be_false
-    TextHelper.recursively_strip_invalid_utf8(data)
-    answer.should == "two"
-    answer.valid_encoding?.should be_true
-
-    # now check that the method is called on serialized AR columns
-    Account.default.update_attribute(:settings, "test")
-    a = Account.find(Account.default.id)
-    TextHelper.expects(:recursively_strip_invalid_utf8).with({})
-    a.settings # deserialization is lazy, trigger it
   end
 end

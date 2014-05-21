@@ -13,9 +13,13 @@ class Profile < ActiveRecord::Base
   validates_format_of :path, :with => /\A[a-z0-9-]+\z/
   validates_uniqueness_of :path, :scope => :root_account_id
   validates_uniqueness_of :context_id, :scope => :context_type
-  validates_inclusion_of :visibility, :in => %w{ public private }
+  validates_inclusion_of :visibility, :in => %w{ public unlisted private }
 
   self.abstract_class = true
+
+  unless CANVAS_RAILS2
+    self.table_name = 'profiles'
+  end
 
   def title=(title)
     write_attribute(:title, title)
@@ -38,20 +42,31 @@ class Profile < ActiveRecord::Base
     read_attribute(:data) || write_attribute(:data, {})
   end
 
+  def data_before_type_cast # for validations and such
+    @data_before_type_cast ||= data.dup
+  end
+
   def self.data(field, options = {})
-    options[:type] = :string
+    options[:type] ||= :string
     define_method(field) {
       data.has_key?(field) ? data[field] : data[field] = options[:default]
     }
     define_method("#{field}=") { |value|
+      data_before_type_cast[field] = value
       data[field] = sanitize_data(value, options)
+    }
+    define_method("#{field}_before_type_cast") {
+      data_before_type_cast[field]
     }
   end
 
   def sanitize_data(value, options)
+    return nil unless value.present?
     case options[:type]
-      when :int; value.to_i
-      else       value
+      when :decimal,
+           :float;   value.to_f
+      when :int;     value.to_i
+      else           value
     end
   end
 
@@ -60,6 +75,7 @@ class Profile < ActiveRecord::Base
     super
     context_type = klass.name.sub(/Profile\z/, '')
     klass.class_eval { alias_method context_type.downcase.underscore, :context }
+    klass.instance_eval { def table_name; "profiles"; end }
     klass.default_scope :conditions => ["context_type = ?", context_type]
   end
 

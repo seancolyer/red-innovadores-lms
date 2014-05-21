@@ -1,8 +1,5 @@
 require File.expand_path(File.dirname(__FILE__) + '/../common')
 
-shared_examples_for "scheduler selenium tests" do
-  it_should_behave_like "in-process server selenium tests"
-
   def fill_out_appointment_group_form(new_appointment_text, opts = {})
     f('.create_link').click
     edit_form = f('#edit_appointment_form')
@@ -18,18 +15,18 @@ shared_examples_for "scheduler selenium tests" do
     f('.ag_contexts_done').click
     if opts[:checkable_options]
       if opts[:checkable_options].has_key?(:per_slot_option)
-        set_value f('[name="per_slot_option"]'), true
+        set_value f('[type=checkbox][name="per_slot_option"]'), true
       end
       if opts[:checkable_options].has_key?(:participant_visibility)
-        set_value f('[name="participant_visibility"]'), true
+        set_value f('[type=checkbox][name="participant_visibility"]'), true
       end
       if opts[:checkable_options].has_key?(:max_appointments_per_participant_option)
-        set_value f('[name="max_appointments_per_participant_option"]'), true
+        set_value f('[type=checkbox][name="max_appointments_per_participant_option"]'), true
       end
     end
     date_field = edit_form.find_element(:css, '.date_field')
     date_field.click
-    wait_for_animations
+    wait_for_ajaximations
     fj('.ui-datepicker-trigger:visible').click
     datepicker_next
     replace_content(edit_form.find_element(:css, '.start_time'), '1')
@@ -60,14 +57,14 @@ shared_examples_for "scheduler selenium tests" do
   end
 
   def click_scheduler_link
-    header_buttons = ff('.ui-buttonset > label')
-    header_buttons[2].click
+    f('button#scheduler').click
     wait_for_ajaximations
   end
 
   def click_appointment_link
     f('.view_calendar_link').click
     f('.scheduler-mode').should be_displayed
+    wait_for_ajaximations
   end
 
   def click_al_option(option_selector, offset=0)
@@ -78,8 +75,7 @@ shared_examples_for "scheduler selenium tests" do
   end
 
   def delete_appointment_group
-    delete_button = fj('.ui-dialog-buttonset .ui-button:contains("Delete")')
-    delete_button.click
+    driver.execute_script("$('.ui-dialog-buttonset .btn-primary').trigger('click')")
     wait_for_ajaximations
   end
 
@@ -87,7 +83,7 @@ shared_examples_for "scheduler selenium tests" do
     f('#edit_appointment_form').should be_displayed
     replace_content(fj('input[name="title"]'), appointment_name)
     replace_content(fj('input[name="location"]'), location_name)
-    f('.ui-dialog-buttonset .ui-button').click
+    driver.execute_script("$('.ui-dialog-buttonset .btn-primary').trigger('click')")
     wait_for_ajaximations
     f('.view_calendar_link').text.should == appointment_name
     f('.ag-location').should include_text(location_name)
@@ -96,6 +92,6 @@ shared_examples_for "scheduler selenium tests" do
   def open_edit_dialog
     driver.action.move_to(f('.appointment-group-item')).perform
     click_al_option('.edit_link')
+    wait_for_ajaximations
   end
-end
 

@@ -44,7 +44,11 @@ class StreamItem < ActiveRecord::Base
     when 'DiscussionTopic', 'Announcement'
       root_discussion_entries = data.delete(:root_discussion_entries)
       root_discussion_entries = root_discussion_entries.map { |entry| reconstitute_ar_object('DiscussionEntry', entry) }
-      res.root_discussion_entries.target = root_discussion_entries
+      if CANVAS_RAILS2
+        res.root_discussion_entries.target = root_discussion_entries
+      else
+        res.association(:root_discussion_entries).target = root_discussion_entries
+      end
       res.attachment = reconstitute_ar_object('Attachment', data.delete(:attachment))
     when 'Submission'
       data['body'] = nil
@@ -52,7 +56,11 @@ class StreamItem < ActiveRecord::Base
     if data.has_key?('users')
       users = data.delete('users')
       users = users.map { |user| reconstitute_ar_object('User', user) }
-      res.users.target = users
+      if CANVAS_RAILS2
+        res.users.target = users
+      else
+        res.association(:users).target = users
+      end
     end
     if data.has_key?('participants')
       users = data.delete('participants')
@@ -113,7 +121,7 @@ class StreamItem < ActiveRecord::Base
   end
 
   def self.delete_all_for(root_asset, asset)
-    item = StreamItem.find(:first, :conditions => { :asset_type => root_asset.first, :asset_id => root_asset.last })
+    item = StreamItem.where(:asset_type => root_asset.first, :asset_id => root_asset.last).first
     # if this is a sub-message, regenerate instead of deleting
     if root_asset != asset
       item.try(:regenerate!)
@@ -165,8 +173,6 @@ class StreamItem < ActiveRecord::Base
     when WebConference
       res = object.attributes
       res['users'] = object.users.map{|u| prepare_user(u)}
-    when CollectionItem
-      res = object.attributes
     else
       raise "Unexpected stream item type: #{object.class.to_s}"
     end
@@ -233,10 +239,7 @@ class StreamItem < ActiveRecord::Base
       stream_item_id = res.id
 
       #find out what the current largest stream item instance is so that we can delete them all once the new ones are created
-      greatest_existing_instance = StreamItemInstance.find(:first,
-                                                 :order => 'id DESC', :limit => 1, :select => 'id',
-                                                 :conditions => ['stream_item_id = ? AND user_id in (?)', stream_item_id, user_ids_subset])
-      greatest_existing_id = greatest_existing_instance.present? ? greatest_existing_instance.id : 0
+      greatest_existing_id = StreamItemInstance.where(:stream_item_id => stream_item_id, :user_id => user_ids_subset).maximum(:id) || 0
 
       inserts = user_ids_subset.map do |user_id|
         {
@@ -249,7 +252,7 @@ class StreamItem < ActiveRecord::Base
         }
       end
 
-      StreamItemInstance.connection.bulk_insert('stream_item_instances', inserts)
+      StreamItemInstance.bulk_insert(inserts)
 
       #reset caches manually because the observer wont trigger off of the above mass inserts
       user_ids_subset.each do |user_id|
@@ -260,24 +263,18 @@ class StreamItem < ActiveRecord::Base
       # This won't actually delete StreamItems out of the table, it just deletes
       # the join table entries.
       # Old stream items are deleted in a periodic job.
-      StreamItemInstance.delete_all(
-            ["user_id in (?) AND stream_item_id = ? AND id <= ?",
-            user_ids_subset, stream_item_id, greatest_existing_id])
+      StreamItemInstance.where("user_id in (?) AND stream_item_id = ? AND id <= ?",
+            user_ids_subset, stream_item_id, greatest_existing_id).delete_all
+
+      # touch all the users to invalidate the cache
+      User.transaction do
+        lock_type = true
+        lock_type = 'FOR NO KEY UPDATE' if User.connection.adapter_name == 'PostgreSQL' && User.connection.send(:postgresql_version) >= 90300
+        # lock the rows in a predefined order to prevent deadlocks
+        User.where(id: user_ids).lock(lock_type).order(:id).pluck(:id)
+        User.where(id: user_ids).update_all(updated_at: Time.now.utc)
+      end
     end
-
-
-    # Here is where we used to go through and update the stream item for anybody
-    # not in user_ids who had the item in their stream, so that the item would
-    # be up-to-date, but not jump to the top of their stream. Now that
-    # we're updating StreamItems in-place and just linking to them through
-    # StreamItemInstances, this happens automatically.
-    # If a teacher leaves a comment for a student, for example
-    # we don't want that to jump to the top of the *teacher's* stream, but
-    # if it's still visible on the teacher's stream then it had better show
-    # the teacher's comment even if it is farther down.
-
-    # touch all the users to invalidate the cache
-    User.update_all({:updated_at => Time.now.utc}, {:id => user_ids})
 
     return [res]
   end
@@ -332,34 +329,38 @@ class StreamItem < ActiveRecord::Base
     user_ids = Set.new
     count = 0
 
-    query = { :conditions => ['updated_at < ?', before_date], :include => [:context] }
-    if touch_users
-      query[:include] << 'stream_item_instances'
-    end
+    scope = where("updated_at<?", before_date).
+        includes(:context).
+        limit(1000)
+    scope = scope.includes(:stream_item_instances) if touch_users
 
-    self.find_each(query) do |item|
-      count += 1
-      if touch_users
-        user_ids.add(item.stream_item_instances.map { |i| i.user_id })
+    while true
+      batch = scope.reload.all
+      batch.each do |item|
+        count += 1
+        if touch_users
+          user_ids.add(item.stream_item_instances.map(&:user_id))
+        end
+        # this will destroy the associated stream_item_instances as well
+        item.destroy
       end
-      # this will destroy the associated stream_item_instances as well
-      item.destroy
+      break if batch.empty?
     end
 
     unless user_ids.empty?
       # touch all the users to invalidate the cache
-      User.update_all({:updated_at => Time.now.utc}, {:id => user_ids.to_a})
+      if CANVAS_RAILS2
+        User.update_all({:updated_at => Time.now.utc}, {:id => user_ids.to_a})
+      else
+        User.where(:id => user_ids.to_a).update_all(:updated_at => Time.now.utc)
+      end
     end
 
     count
   end
 
-  named_scope :before, lambda {|id|
-    {:conditions => ['id < ?', id], :order => 'updated_at DESC', :limit => 21 }
-  }
-  named_scope :after, lambda {|start_at| 
-    {:conditions => ['updated_at > ?', start_at], :order => 'updated_at DESC', :limit => 21 }
-  }
+  scope :before, lambda { |id| where("id<?", id).order("updated_at DESC").limit(21) }
+  scope :after, lambda { |start_at| where("updated_at>?", start_at).order("updated_at DESC").limit(21) }
 
   def associated_shards
     if self.context.try(:respond_to?, :associated_shards)
@@ -402,7 +403,16 @@ class StreamItem < ActiveRecord::Base
     res
   end
 
+  public
   def destroy_stream_item_instances
-    self.stream_item_instances.with_each_shard { |scope| scope.scoped({}).delete_all; nil }
+    self.stream_item_instances.with_each_shard do |scope|
+      if CANVAS_RAILS2
+        # bare scoped call avoid Rails 2 HasManyAssociation loading all objects
+        scope.scoped.delete_all
+      else
+        scope.delete_all
+      end
+      nil
+    end
   end
 end

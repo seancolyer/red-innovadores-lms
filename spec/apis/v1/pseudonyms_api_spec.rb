@@ -18,7 +18,7 @@
 
 require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 
-describe PseudonymsController, :type => :integration do
+describe PseudonymsController, type: :request do
   before do
     course_with_student(:active_all => true)
     account_admin_user
@@ -64,9 +64,10 @@ describe PseudonymsController, :type => :integration do
         })
         json.count.should eql 1
         headers = response.headers['Link'].split(',')
-        headers[0].should match /page=2&per_page=1/ # next page
-        headers[1].should match /page=1&per_page=1/ # first page
-        headers[2].should match /page=2&per_page=1/ # last page
+        headers[0].should match /page=1&per_page=1/ # current page
+        headers[1].should match /page=2&per_page=1/ # next page
+        headers[2].should match /page=1&per_page=1/ # first page
+        headers[3].should match /page=2&per_page=1/ # last page
       end
 
       it "should return all pseudonyms for a user" do
@@ -169,6 +170,11 @@ describe PseudonymsController, :type => :integration do
         })
         response.code.should eql '400'
       end
+
+      it "should return 400 when nothing is passed" do
+        raw_api_call(:post, @path, @path_options)
+        response.code.should eql '400'
+      end
     end
 
     context "an unauthorized user" do
@@ -184,6 +190,16 @@ describe PseudonymsController, :type => :integration do
         })
         response.code.should eql '401'
       end
+    end
+
+    it "should not allow user to add their own pseudonym to an arbitrary account" do
+      user_with_pseudonym(active_all: true)
+      raw_api_call(:post, "/api/v1/accounts/#{Account.site_admin.id}/logins",
+                   { account_id: Account.site_admin.id.to_param, controller: 'pseudonyms',
+                     action: 'create', format: 'json'},
+                   user: { id: @user.id },
+                   login: { unique_id: 'user'} )
+      response.code.should eql '401'
     end
   end
 

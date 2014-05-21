@@ -33,7 +33,7 @@ module CC
       FileUtils::mkdir_p @canvas_resource_dir
       
       resources = []
-      resources << run_and_set_progress(:create_course_settings, nil, I18n.t('course_exports.errors.course_settings', "Failed to export course settings"), migration_id)
+      resources << run_and_set_progress(:create_course_settings, nil, I18n.t('course_exports.errors.course_settings', "Failed to export course settings"), migration_id) if export_symbol?(:all_course_settings)
       resources << run_and_set_progress(:create_module_meta, nil, I18n.t('course_exports.errors.module_meta', "Failed to export module meta data"))
       resources << run_and_set_progress(:create_external_feeds, nil, I18n.t('course_exports.errors.external_feeds', "Failed to export external feeds"))
       resources << run_and_set_progress(:create_assignment_groups, nil, I18n.t('course_exports.errors.assignment_groups', "Failed to export assignment groups"))
@@ -45,7 +45,7 @@ module CC
       
 
       # Create the syllabus resource
-      if export_symbol?(:syllabus_body)
+      if export_symbol?(:syllabus_body) || export_symbol?(:all_syllabus_body)
         syl_rel_path = create_syllabus
         @resources.resource(
           :identifier => migration_id + "_syllabus",
@@ -132,15 +132,17 @@ JOKE
         atts -= Canvas::Migration::MigratorHelper::COURSE_NO_COPY_ATTS
         atts << :grading_standard_enabled
         atts << :storage_quota
-        atts.each do |att|
-          c.tag!(att, @course.send(att)) unless @course.send(att).nil? || @course.send(att) == ''
+        @course.disable_setting_defaults do # so that we don't copy defaulted settings
+          atts.each do |att|
+            c.tag!(att, @course.send(att)) unless @course.send(att).nil? || @course.send(att) == ''
+          end
         end
-        c.hide_final_grade @course.settings[:hide_final_grade] unless @course.settings[:hide_final_grade].nil?
         if @course.grading_standard
           if @course.grading_standard.context_type == "Account"
             c.grading_standard_id @course.grading_standard.id
           else
             c.grading_standard_identifier_ref create_key(@course.grading_standard)
+            add_item_to_export(@course.grading_standard)
           end
         end
       end

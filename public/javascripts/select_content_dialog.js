@@ -20,8 +20,10 @@ define([
   'INST' /* INST */,
   'i18n!select_content_dialog',
   'jquery' /* $ */,
+  'compiled/legacy/add_assignment' /* attachAddAssignment */,
+  'jquery.instructure_date_and_time' /* datetime_field */,
   'jquery.ajaxJSON' /* ajaxJSON */,
-  'jquery.instructure_forms' /* ajaxJSONFiles, getFormData, errorBox */,
+  'jquery.instructure_forms' /* formSubmit, ajaxJSONFiles, getFormData, errorBox */,
   'jqueryui/dialog',
   'compiled/jquery/fixDialogButtons' /* fix dialog formatting */,
   'jquery.instructure_misc_helpers' /* replaceTags, getUserServices, findLinkForService */,
@@ -29,7 +31,38 @@ define([
   'jquery.keycodes' /* keycodes */,
   'jquery.loadingImg' /* loadingImage */,
   'jquery.templateData' /* fillTemplateData */
-], function(INST, I18n, $) {
+], function(INST, I18n, $, attachAddAssignment) {
+
+  $(document).ready(function() {
+    $(".add_assignment_inline:not(:first)").remove();
+    $("#add_assignment_inline_form .datetime_field").not(".datetime_field_enabled").datetime_field();
+    $("#add_assignment_inline_form").formSubmit({
+      beforeSubmit: function(data) {
+        $("#add_assignment_inline").loadingImage();
+      },
+      success: function(data) {
+        $("#add_assignment_inline").loadingImage("remove");
+        var assignment = data.assignment;
+        var $group = $("#add_assignment_inline_form").data("group_select");
+        var selector = $("#add_assignment_inline_form").data("group_selector");
+        var $groups = $group;
+        if (selector) $groups = $groups.add(selector);
+        $groups.each(function() {
+          var $option = $(document.createElement("option"));
+          $option.val(assignment.id).text(assignment.title);
+          if ($(this).children("#assignment_group_optgroup_" + assignment.assignment_group_id).length > 0)
+            $(this).children("#assignment_group_optgroup_" + assignment.assignment_group_id).append($option);
+          else
+            $(this).children("option:last").before($option);
+        });
+        $group.val(assignment.id).change();
+        $("#add_assignment_inline").dialog("close");
+      }
+    });
+    $("#add_assignment_inline .cancel_button").click(function(event) {
+      $("#add_assignment_inline").dialog("close");
+    });
+  });
 
 $(document).ready(function() {
   var external_services = null;
@@ -37,6 +70,7 @@ $(document).ready(function() {
   attachAddAssignment($("#assignments_select .module_item_select"));
   INST = INST || {};
   INST.selectContentDialog = function(options) {
+    var options = options || {};
     var for_modules = options.for_modules;
     var select_button_text = options.select_button_text || I18n.t('buttons.add_item', "Add Item");
     var holder_name = options.holder_name || "module";
@@ -77,7 +111,8 @@ $(document).ready(function() {
     $("#select_context_content_dialog .module_item_select").change();
     $("#select_context_content_dialog").dialog({
       title: dialog_title,
-      width: 400
+      width: options.width || 400,
+      height: options.height || 400
     }).fixDialogButtons();
     $("#select_context_content_dialog").dialog('option', 'title', dialog_title);
   }
@@ -162,7 +197,7 @@ $(document).ready(function() {
             item_data['item[title]'] = item_data['item[title]'] || obj.display_name
             var $option = $(document.createElement('option'));
             $option.val(obj.id).text(item_data['item[title]']);
-            $("#" + item_data['item[type]'] + "s_select").find(".module_item_select option:last").before($option);
+            $("#" + item_data['item[type]'] + "s_select").find(".module_item_select option:last").after($option);
             submit(item_data);
           };
           if(item_data['item[type]'] == 'attachment') {
@@ -197,8 +232,8 @@ $(document).ready(function() {
     if($tool.hasClass('resource_selection')) {
       var tool = $tool.data('tool');
       var frameHeight = Math.max(Math.min($(window).height() - 100, 550), 100);
-      var width = tool.resource_selection_settings.selection_width;
-      var height = tool.resource_selection_settings.selection_height;
+      var width = tool.resource_selection.selection_width || tool.selection_width;
+      var height = tool.resource_selection.selection_height || tool.selection_height;
       var $dialog = $("#resource_selection_dialog");
       if($dialog.length == 0) {
         $dialog = $("<div/>", {id: 'resource_selection_dialog', style: 'padding: 0; overflow-y: hidden;'});
@@ -232,7 +267,7 @@ $(document).ready(function() {
             });
           })
           .bind('selection', function(event, data) {
-            if(data.embed_type == 'basic_lti' && data.url) {
+            if(data.return_type == 'lti_launch_url' && data.url) {
               $("#external_tool_create_url").val(data.url);
               $("#external_tool_create_title").val(data.text || tool.name);
               $("#context_external_tools_select .domain_message").hide();
@@ -274,9 +309,9 @@ $(document).ready(function() {
           $select.find(".tools").empty();
           for(var idx in data) {
             var tool = data[idx];
-            if(tool.url || tool.domain || tool.resource_selection_settings) {
+            if(tool.url || tool.domain || tool.resource_selection) {
               var $tool = $tool_template.clone(true);
-              $tool.toggleClass('resource_selection', !!tool.resource_selection_settings);
+              $tool.toggleClass('resource_selection', !!tool.resource_selection);
               $tool.fillTemplateData({
                 data: tool,
                 dataValues: ['id', 'url', 'domain', 'name']

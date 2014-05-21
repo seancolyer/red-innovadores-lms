@@ -27,13 +27,24 @@ if db_queue_config
   Delayed::Backend::ActiveRecord::Job.establish_connection(db_queue_config)
 end
 
-# We don't want to keep around max_attempts failed jobs that failed because the
-# underlying AR object was destroyed.
 Delayed::Worker.on_max_failures = proc do |job, err|
-  if err.is_a?(Delayed::Backend::RecordNotFound)
-    return true
-  end
+  # We don't want to keep around max_attempts failed jobs that failed because the
+  # underlying AR object was destroyed.
+  # All other failures are kept for inspection.
+  err.is_a?(Delayed::Backend::RecordNotFound)
+end
 
-  # by default, keep failed jobs around for investigation
-  false
+Delayed::Worker.lifecycle.around(:perform) do |worker, job, &block|
+  starting_mem = Canvas.sample_memory()
+  starting_cpu = Process.times()
+  begin
+    block.call(worker, job)
+  ensure
+    ending_cpu = Process.times()
+    ending_mem = Canvas.sample_memory()
+    user_cpu = ending_cpu.utime - starting_cpu.utime
+    system_cpu = ending_cpu.stime - starting_cpu.stime
+
+    Rails.logger.info "[STAT] #{starting_mem} #{ending_mem} #{ending_mem - starting_mem} #{user_cpu} #{system_cpu}"
+  end
 end

@@ -17,12 +17,13 @@
 #
 
 define [
+  'jquery'
   'underscore'
   'compiled/views/PaginatedView'
   'compiled/collections/UserCollection'
   'compiled/collections/GroupCollection'
   'jst/collaborations/collaborator'
-], ({each, extend, flatten, reject}, PaginatedView, UserCollection, GroupCollection, collaboratorTemplate) ->
+], ($, {each, extend, flatten, reject}, PaginatedView, UserCollection, GroupCollection, collaboratorTemplate) ->
 
   class ListView extends PaginatedView
     # Members to exclude from the collection.
@@ -31,11 +32,11 @@ define [
     events:
       'click a': 'selectCollaborator'
 
-    initialize: ->
-      @collection                = @createCollection(@options.type)
+    initialize: (options = {}) ->
+      @collection                = @createCollection(options.type)
       @paginationScrollContainer = @$el.parents('.list-wrapper')
       @attachEvents()
-      super(fetchOptions: @options.fetchOptions)
+      super
 
     # Internal: Create a collection of the given type.
     #
@@ -94,14 +95,18 @@ define [
       @hasFocus     = true
       @collection.remove(id)
 
-    # Public: Filter out the given members.
+    # Public: Filter out the given members. We wrap this in a setTimeout to
+    # allow Backbone to catch up with itself; without it, the occassional
+    # `cid of undefined` error crops up.
     #
     # models - An array of models to filter out of the collection.
     #
     # Returns nothing.
     updateFilter: (models) ->
-      @filteredMembers = flatten([@filteredMembers, models])
-      each(@filteredMembers, (m) => @collection.remove(m, silent: true))
+      setTimeout =>
+        @filteredMembers = flatten([@filteredMembers, models])
+        each(@filteredMembers, (m) => @collection.remove(m, silent: true))
+      , 0
 
     # Public: Remove the given model from the filter.
     #

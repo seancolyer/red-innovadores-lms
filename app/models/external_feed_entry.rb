@@ -24,8 +24,9 @@ class ExternalFeedEntry < ActiveRecord::Base
   belongs_to :asset, :polymorphic => true
   
   before_save :infer_defaults
+  validates_presence_of :user_id, :external_feed_id, :workflow_state
   validates_length_of :message, :maximum => maximum_text_length, :allow_nil => true, :allow_blank => true
-  sanitize_field :message, Instructure::SanitizeField::SANITIZE
+  sanitize_field :message, CanvasSanitize::SANITIZE
 
   attr_accessible :title, :message, :source_name, :source_url, :posted_at, :start_at, :end_at, :user, :url, :uuid, :author_name, :author_url, :author_email, :asset
   

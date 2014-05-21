@@ -27,14 +27,10 @@ class AssetUserAccess < ActiveRecord::Base
   before_save :infer_defaults
   attr_accessible :user, :asset_code
 
-  named_scope :for_context, lambda{|context|
-    {:conditions => ["asset_user_accesses.context_id = ? AND asset_user_accesses.context_type = ?", context.id, context.class.to_s]}
-  }
-  named_scope :for_user, lambda{ |user|
-    { :conditions => {:user_id => user} }
-  }
-  named_scope :participations, {:conditions => { :action_level => 'participate' }}
-  named_scope :most_recent, {:order => 'updated_at DESC'}
+  scope :for_context, lambda { |context| where(:context_id => context, :context_type => context.class.to_s) }
+  scope :for_user, lambda { |user| where(:user_id => user) }
+  scope :participations, where(:action_level => 'participate')
+  scope :most_recent, order('updated_at DESC')
 
   def category
     self.asset_category
@@ -150,11 +146,9 @@ class AssetUserAccess < ActiveRecord::Base
 
   def asset
     asset_code, general = self.asset_code.split(":").reverse
-    code_split = asset_code.split("_")
     asset = Context.find_asset_by_asset_string(asset_code, context)
     asset
   end
-  memoize :asset
 
   def asset_class_name
     self.asset.class.name.underscore if self.asset
@@ -182,9 +176,21 @@ class AssetUserAccess < ActiveRecord::Base
 
   def self.infer_asset(code)
     asset_code, general = code.split(":").reverse
-    code_split = asset_code.split("_")
     asset = Context.find_asset_by_asset_string(asset_code)
     asset
+  end
+
+  # For Quizzes, we want the view score not to include the participation score
+  # so it reflects the number of times a student really just browsed the quiz.
+  def corrected_view_score
+    deductible_points = 0
+
+    if 'quizzes' == self.asset_group_code
+      deductible_points = self.participate_score || 0
+    end
+
+    self.view_score ||= 0
+    self.view_score -= deductible_points
   end
 
   private

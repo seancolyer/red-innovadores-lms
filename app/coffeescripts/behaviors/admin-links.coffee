@@ -5,15 +5,11 @@ define [
 
   # this is a behaviour that will automatically set up a set of .admin-links
   # when the button is clicked, see _admin_links.scss for markup
-  $(document).on 'click', '.al-trigger', (event) ->
+  $(document).on 'mousedown mouseup click keydown', '.al-trigger', (event) ->
     $trigger = $(this)
-    defaults =
-      buttonOpts:
-        icons:
-          primary: null
-          secondary: null
+    return if $trigger.data('kyleMenu')
+    opts = $.extend {noButton: true}, $trigger.data('kyleMenuOptions')
+    opts.appendMenuTo = 'body' if $trigger.data('append-to-body')
+    new KyleMenu($trigger, opts)
 
-    unless $trigger.data('kyleMenu')
-      event.preventDefault()
-      opts = $.extend defaults, $trigger.data('kyleMenuOptions')
-      new KyleMenu($trigger, opts).open()
+    $trigger.trigger(event)

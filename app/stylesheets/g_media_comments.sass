@@ -51,6 +51,9 @@ div#audio_upload,div#video_upload
   background: #fff
   font-size: 1.2em
 
+.media_tab
+  height: 360px
+
 #media_upload_holder
   height: 240px
 
@@ -178,6 +181,9 @@ div#audio_upload,div#video_upload
   visibility: visible
 
 
+.youtubed
+  display: block
+
 .media_comment_thumbnail
   width: 140px
   height: 100px
@@ -185,7 +191,7 @@ div#audio_upload,div#video_upload
   background: url(/images/blank.png) no-repeat center center
   background-color: #222
   border: 0px solid #000
-  display: inline-block
+  display: block
   padding: 2px
 
   &.media_comment_thumbnail-small
@@ -201,13 +207,10 @@ div#audio_upload,div#video_upload
   text-indent: -999px
   overflow: hidden
 
-
-  &:hover, .touch &
-    background-image: url(/images/play_overlay.png)
+  background-image: url(/images/play_overlay.png)
 
   .media_comment_thumbnail-small &
     height: image-height("play_overlay_small.png")
     width: image-width("play_overlay_small.png")
 
-    &:hover, .touch &
-      background-image: url(/images/play_overlay_small.png)
+    background-image: url(/images/play_overlay_small.png)

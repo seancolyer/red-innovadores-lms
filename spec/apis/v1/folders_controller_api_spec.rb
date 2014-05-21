@@ -18,7 +18,7 @@
 
 require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 
-describe "Folders API", :type => :integration do
+describe "Folders API", type: :request do
   before do
     course_with_teacher(:active_all => true, :user => user_with_pseudonym)
     @root = Folder.root_folders(@course).first
@@ -381,7 +381,7 @@ describe "Folders API", :type => :integration do
       api_call(:post, "/api/v1/folders/#{@root_folder.id}/files",
         { :controller => "folders", :action => "create_file", :format => "json", :folder_id => @root_folder.id.to_param, },
         :name => "with_path.txt")
-      attachment = Attachment.last(:order => :id)
+      attachment = Attachment.order(:id).last
       attachment.folder_id.should == @root_folder.id
     end
   end

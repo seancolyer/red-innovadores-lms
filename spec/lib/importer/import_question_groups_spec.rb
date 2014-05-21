@@ -48,7 +48,7 @@ describe "Quiz Import" do
   it "should use the correct question bank" do
     context = course_model
     migration = ContentMigration.create!(:context => context)
-    migration.migration_ids_to_import = {:copy=>{'assessment_questions'=>true}}
+    migration.migration_ids_to_import = {:copy=>{'assessment_questions'=>true, 'all_quizzes'=>true}}
     migration.question_bank_name = "test question bank"
     data = get_import_data [], 'question_group'
 
@@ -81,7 +81,7 @@ describe "Quiz Import" do
     question_data[question[:migration_id]] = context.assessment_questions.find_by_migration_id(question[:migration_id])
     
     quiz = get_import_data 'cengage', 'quiz'
-    Quiz.import_from_migration(quiz, context, question_data)
+    Quizzes::Quiz.import_from_migration(quiz, context, question_data)
     quiz = context.quizzes.find_by_migration_id(quiz[:migration_id])
     
     group = quiz.quiz_groups.first

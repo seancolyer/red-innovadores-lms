@@ -35,14 +35,16 @@ class CrocodocDocument < ActiveRecord::Base
   def upload
     return if uuid.present?
 
-    url = attachment.authenticated_s3_url(:expires_in => 1.day)
+    url = attachment.authenticated_s3_url(:expires => 1.day)
 
     response = Canvas.timeout_protection("crocodoc") {
       crocodoc_api.upload(url)
     }
 
-    if response['uuid']
+    if response && response['uuid']
       update_attributes :uuid => response['uuid'], :process_state => 'QUEUED'
+    elsif response.nil?
+      raise "no response received (request timed out?)"
     else
       raise response.inspect
     end
@@ -93,7 +95,7 @@ class CrocodocDocument < ActiveRecord::Base
 
     submissions = attachment.attachment_associations.
       where(:context_type => 'Submission').
-      scoped(:include => :context).
+      includes(:context).
       map(&:context)
 
     return opts unless submissions
@@ -125,33 +127,41 @@ class CrocodocDocument < ActiveRecord::Base
 
   def self.update_process_states
     bs = Setting.get('crocodoc_status_check_batch_size', '45').to_i
-    CrocodocDocument.find_in_batches(:conditions => { :process_state => %w(QUEUED PROCESSING) }) do |docs|
-      statuses = []
-      docs.each_slice(bs) do |sub_docs|
-        statuses.concat CrocodocDocument.crocodoc_api.status(sub_docs.map(&:uuid))
-      end
+    Shackles.activate(:slave) do
+      CrocodocDocument.where(:process_state => %w(QUEUED PROCESSING)).find_in_batches do |docs|
+        Shackles.activate(:master) do
+          statuses = []
+          docs.each_slice(bs) do |sub_docs|
+            statuses.concat CrocodocDocument.crocodoc_api.status(sub_docs.map(&:uuid))
+          end
 
-      statuses.each do |status|
-        uuid, state = status['uuid'], status['status']
-        CrocodocDocument.update_all(
-          {:process_state => status['status']},
-          {:uuid => status['uuid']}
-        )
-        if status['status'] == 'ERROR'
-          error = status['error'] || 'No explanation given'
-          ErrorReport.log_error 'crocodoc', :message => error
+          bulk_updates = {}
+          error_uuids = []
+          statuses.each do |status|
+            uuid, state = status['uuid'], status['status']
+            bulk_updates[status['status']] ||= []
+            bulk_updates[status['status']] << status['uuid']
+            if status['status'] == 'ERROR'
+              error = status['error'] || 'No explanation given'
+              error_uuids << status['uuid']
+              ErrorReport.log_error 'crocodoc', :message => error
+            end
+          end
+
+          bulk_updates.each do |status, uuids|
+            CrocodocDocument.
+                where(:uuid => uuids).
+                update_all(:process_state => status)
+          end
+
+          if error_uuids.present?
+            error_docs = CrocodocDocument.where(:uuid => error_uuids)
+            attachment_ids = error_docs.map(&:attachment_id)
+            Attachment.send_later_enqueue_args :submit_to_scribd,
+              {:n_strand => 'scribd', :max_attempts => 1},
+              attachment_ids
+          end
         end
-      end
-
-      error_uuids = statuses.select { |s|
-        s['status'] == 'ERROR'
-      }.map { |s| s['uuid'] }
-      if error_uuids.present?
-        error_docs = CrocodocDocument.where(:uuid => error_uuids)
-        attachment_ids = error_docs.map(&:attachment_id)
-        Attachment.send_later_enqueue_args :submit_to_scribd,
-          {:n_strand => 'scribd', :max_attempts => 1},
-          attachment_ids
       end
     end
   end

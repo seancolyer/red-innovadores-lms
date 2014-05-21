@@ -21,25 +21,50 @@ require File.expand_path(File.dirname(__FILE__) + '/../sharding_spec_helper')
 describe PseudonymsController do
 
   describe "password changing" do
-    it "should change the password if authorized" do
+    before do
       user_with_pseudonym
-      pword = @pseudonym.crypted_password
-      code = @cc.confirmation_code
-      post 'change_password', :pseudonym_id => @pseudonym.id, :nonce => @cc.confirmation_code, :pseudonym => {:password => '12341234', :password_confirmation => '12341234'}
-      response.should be_redirect
-      assigns[:pseudonym].should eql(@pseudonym)
-      assigns[:pseudonym].crypted_password.should_not eql(pword)
-      assigns[:pseudonym].user.should be_registered
-      assigns[:cc].confirmation_code.should_not eql(code)
-      assigns[:cc].should be_active
+    end
+
+    context "unconfirmed communication channel" do
+      it "should change the password if authorized" do
+        pword = @pseudonym.crypted_password
+        code = @cc.confirmation_code
+        post 'change_password', :pseudonym_id => @pseudonym.id, :nonce => @cc.confirmation_code, :pseudonym => {:password => '12341234', :password_confirmation => '12341234'}
+        response.should be_success
+        assigns[:pseudonym].should eql(@pseudonym)
+        @pseudonym.reload
+        @pseudonym.crypted_password.should_not eql(pword)
+        @pseudonym.user.should be_registered
+        @cc.reload
+        @cc.confirmation_code.should_not eql(code)
+        @cc.should be_active
+      end
+    end
+
+    context "active communication channel" do
+      it "should change the password if authorized" do
+        @cc.confirm
+        @cc.reload
+        @cc.should be_active
+        pword = @pseudonym.crypted_password
+        code = @cc.confirmation_code
+        post 'change_password', :pseudonym_id => @pseudonym.id, :nonce => @cc.confirmation_code, :pseudonym => {:password => '12341234', :password_confirmation => '12341234'}
+        response.should be_success
+        assigns[:pseudonym].should eql(@pseudonym)
+        @pseudonym.reload
+        @pseudonym.crypted_password.should_not eql(pword)
+        @pseudonym.user.should be_registered
+        @cc.reload
+        @cc.confirmation_code.should_not eql(code)
+        @cc.should be_active
+      end
     end
 
     it "should not change the password if unauthorized" do
-      user_with_pseudonym
       pword = @pseudonym.crypted_password
       code = @cc.confirmation_code
       post 'change_password', :pseudonym_id => @pseudonym.id, :nonce => @cc.confirmation_code + 'a', :pseudonym => {:password => '12341234', :password_confirmation => '12341234'}
-      response.should be_redirect
+      assert_status(400)
       assigns[:pseudonym].should eql(@pseudonym)
       assigns[:pseudonym].crypted_password.should eql(pword)
       assigns[:pseudonym].user.should_not be_registered
@@ -65,7 +90,7 @@ describe PseudonymsController do
       it "should use case insensitive match for CommunicationChannel email" do
         # Setup user with communication channel that has mixed case email
         user_with_pseudonym
-        @cc = communication_channel_model(:user_id => @user.id, :workflow_state => 'active', :path => 'Victoria.Silvstedt@example.com')
+        @cc = communication_channel_model(:workflow_state => 'active', :path => 'Victoria.Silvstedt@example.com')
         get 'forgot_password', :pseudonym_session => {:unique_id_forgot => 'victoria.silvstedt@example.com'}
         response.should be_redirect
         assigns[:ccs].should include(@cc)
@@ -113,7 +138,7 @@ describe PseudonymsController do
 
   describe "destroy" do
     it "should not destroy if for the wrong user" do
-      rescue_action_in_public!
+      rescue_action_in_public! if CANVAS_RAILS2
       user_model
       @other_user = @user
       @other_pseudonym = @user.pseudonyms.create!(:unique_id => "test@test.com", :password => "password", :password_confirmation => "password")
@@ -159,7 +184,7 @@ describe PseudonymsController do
     end
 
     it "should not destroy if for the current user and it's a system-generated pseudonym" do
-      rescue_action_in_public!
+      rescue_action_in_public! if CANVAS_RAILS2
       user_with_pseudonym(:active_all => true)
       user_session(@user, @pseudonym)
       @p2 = @user.pseudonyms.create!(:unique_id => "another_one@test.com",:password => 'password', :password_confirmation => 'password')
@@ -173,7 +198,7 @@ describe PseudonymsController do
     end
 
     it "should destroy if authorized to delete pseudonyms" do
-      rescue_action_in_public!
+      rescue_action_in_public! if CANVAS_RAILS2
       user_with_pseudonym(:active_all => true)
       Account.site_admin.add_user(@user)
       user_session(@user, @pseudonym)
@@ -212,6 +237,7 @@ describe PseudonymsController do
 
       it 'lets user create pseudonym for self' do
         post 'create', :user_id => @user.id, :pseudonym => { :account_id => Account.default.id, :unique_id => 'a_new_unique_name' }
+        response.should be_redirect
         @user.reload.pseudonyms.map(&:unique_id).should include('a_new_unique_name')
       end
 
@@ -220,6 +246,32 @@ describe PseudonymsController do
         Account.site_admin.add_user(siteadmin)
         Account.default.add_user(siteadmin)
         post 'create', :user_id => siteadmin.id, :pseudonym => { :account_id => Account.site_admin.id, :unique_id => 'a_new_unique_name' }
+        assert_unauthorized
+      end
+
+      it 'will not allow default admin to create pseudonym in another account' do
+        user2 = User.create!
+        Account.default.pseudonyms.create!(unique_id: 'user', user: user2)
+        account2 = Account.create!
+
+        LoadAccount.stubs(:default_domain_root_account).returns(account2)
+        post 'create', user_id: user2.id, pseudonym: { unique_id: 'user' }
+        assert_unauthorized
+      end
+
+      it 'will not allow default admin to create pseudonym in site admin' do
+        user2 = User.create!
+        Account.default.pseudonyms.create!(unique_id: 'user', user: user2)
+        Account.site_admin.add_user(user2)
+
+        LoadAccount.stubs(:default_domain_root_account).returns(Account.site_admin)
+        post 'create', user_id: user2.id, pseudonym: { unique_id: 'user' }
+        assert_unauthorized
+      end
+
+      it 'will not allow admin to add pseudonyms to unrelated users' do
+        user2 = User.create!
+        post 'create', user_id: user2.id, pseudonym: { unique_id: 'user' }
         assert_unauthorized
       end
     end
@@ -233,20 +285,34 @@ describe PseudonymsController do
         user_session(@user, @pseudonym)
       end
 
-      it "should ignore use the domain_root_account" do
+      it "should use the domain_root_account" do
         post 'create', :format => 'json', :user_id => @user.id, :pseudonym => { :unique_id => 'unique1' }
         response.should be_success
         @user.pseudonyms.size.should == 2
         (@user.pseudonyms - [@pseudonym]).last.account.should == @account
       end
 
-      it "should ignore account id in params and use the domain_root_account" do
+      it "should allow explicit account id in params as long as they have permission" do
         @account2 = Account.create!
-        post 'create', :format => 'json', :user_id => @user.id, :pseudonym => { :account_id => @account2.id, :unique_id => 'unique1' }
+        post 'create', :format => 'json', :user_id => @user.id, :pseudonym => { :account_id => @account.id, :unique_id => 'unique1' }
         response.should be_success
         @user.pseudonyms.size.should == 2
         (@user.pseudonyms - [@pseudonym]).last.account.should == @account
       end
+
+      it "should raise permission error if no permission on explict account id in params" do
+        @account2 = Account.create!
+        post 'create', :user_id => @user.id, :pseudonym => { :account_id => @account2.id, :unique_id => 'unique1' }
+        assert_unauthorized
+      end
+    end
+
+    it "should not allow user to add their own pseudonym to an arbitrary account" do
+      user_with_pseudonym(active_all: true)
+      account2 = Account.create!
+      user_session(@user, @pseudonym)
+      post 'create', user_id: @user.id, pseudonym: { account_id: account2.id, unique_id: 'user' }
+      assert_unauthorized
     end
   end
 
@@ -302,7 +368,7 @@ describe PseudonymsController do
   end
 
   context "sharding" do
-    it_should_behave_like "sharding"
+    specs_require_sharding
 
     before do
       user_with_pseudonym(:active_all => 1)

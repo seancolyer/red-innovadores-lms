@@ -4,8 +4,7 @@ require File.expand_path(File.dirname(__FILE__) + '/helpers/submissions_common')
 
 
 describe "submissions" do
-  it_should_behave_like "in-process server selenium tests"
-  it_should_behave_like "submissions selenium tests"
+  include_examples "in-process server selenium tests"
 
   context 'as a student' do
 
@@ -30,10 +29,10 @@ describe "submissions" do
       # open it twice
       open_button.click
       # swf and other stuff load, give it half a second before it starts trying to click
-      sleep 0.5
+      sleep 1
       close_visible_dialog
       open_button.click
-      sleep 0.5
+      sleep 1
       close_visible_dialog
 
       # fire the callback that the flash object fires
@@ -52,7 +51,7 @@ describe "submissions" do
 
       create_assignment_and_go_to_page 'media_recording'
       f(".submit_assignment_link").click
-      f('#media_comment_submit_button').attribute('disabled').should == 'true'
+      f('#media_comment_submit_button').should have_attribute('disabled', 'true')
       # leave so the "are you sure?!" message doesn't freeze up selenium
       f('#section-tabs .home').click
       driver.switch_to.alert.accept
@@ -89,7 +88,7 @@ describe "submissions" do
       wait_for_ajaximations
       f('#submit_file_button').click
       wait_for_ajaximations
-      f('#flash_message_holder .ui-state-error').should be_displayed
+      flash_message_present?(:error).should be_true
 
       # navigate off the page and dismiss the alert box to avoid problems
       # with other selenium tests
@@ -125,19 +124,23 @@ describe "submissions" do
       @assignment.update_attributes(:submission_types => "online_text_entry")
       get "/courses/#{@course.id}/assignments/#{@assignment.id}"
       f('.submit_assignment_link').click
+      wait_for_ajaximations
       assignment_form = f('#submit_online_text_entry_form')
       wait_for_tiny(assignment_form)
+
       submit_form(assignment_form)
+      wait_for_ajaximations
 
       # it should not actually submit and pop up an error message
-      f('.error_box').should be_displayed
+      ff('.error_box')[1].should include_text('Required')
+
       Submission.count.should == 0
 
       # now make sure it works
-      expect {
-        type_in_tiny('#submission_body', 'now it is not blank')
-        submit_form(assignment_form)
-      }.to change(Submission, :count).by(1)
+      type_in_tiny('#submission_body', 'now it is not blank')
+      submit_form(assignment_form)
+      wait_for_ajaximations
+      Submission.count.should == 1
     end
 
     it "should not allow a submission with only comments" do
@@ -149,7 +152,7 @@ describe "submissions" do
       submit_form("#submit_online_text_entry_form")
 
       # it should not actually submit and pop up an error message
-      f('.error_box').should be_displayed
+      ff('.error_box')[1].should include_text('Required')
       Submission.count.should == 0
 
       # navigate off the page and dismiss the alert box to avoid problems
@@ -204,6 +207,7 @@ describe "submissions" do
       end
     end
 
+
     it "should submit an assignment and validate confirmation information" do
       pending "BUG 6783 - Coming Up assignments update error" do
         @assignment.update_attributes(:submission_types => 'online_url')
@@ -222,16 +226,32 @@ describe "submissions" do
     end
 
     describe 'uploaded files for submission' do
-      it_should_behave_like "forked server selenium tests"
-      it_should_behave_like "files selenium shared"
+      include_examples "in-process server selenium tests"
+
+      def fixture_file_path(file)
+        path = ActionController::TestCase.respond_to?(:fixture_path) ? ActionController::TestCase.send(:fixture_path) : nil
+        return "#{path}#{file}"
+      end
+
+      def add_file(fixture, context, name)
+        context.attachments.create! do |attachment|
+          attachment.uploaded_data = fixture
+          attachment.filename = name
+          attachment.folder = Folder.root_folders(context).first
+        end
+      end
+
+      def make_folder_actions_visible
+        driver.execute_script("$('.folder_item').addClass('folder_item_hover')")
+      end
 
       it "should allow uploaded files to be used for submission" do
+        local_storage!
 
-        Setting.set("file_storage_test_override", "local")
         user_with_pseudonym :username => "nobody2@example.com",
                             :password => "asdfasdf2"
         course_with_student_logged_in :user => @user
-        login "nobody2@example.com", "asdfasdf2"
+        create_session @pseudonym, false
         add_file(fixture_file_upload('files/html-editing-test.html', 'text/html'),
                  @user, "html-editing-test.html")
         File.read(fixture_file_path("files/html-editing-test.html"))
@@ -240,13 +260,26 @@ describe "submissions" do
                                                  :submission_types => "online_upload")
         get "/courses/#{@course.id}/assignments/#{assignment.id}"
         f('.submit_assignment_link').click
+        wait_for_ajaximations
         f('.toggle_uploaded_files_link').click
+        wait_for_ajaximations
 
         # traverse the tree
-        f('#uploaded_files > ul > li.folder > .sign').click
-        wait_for_animations
-        f('#uploaded_files > ul > li.folder .file .name').click
-        wait_for_animations
+        begin
+          keep_trying_until do
+            f('#uploaded_files > ul > li.folder > .sign').click
+            wait_for_ajaximations
+            f('#uploaded_files > ul > li.folder .file .name').should be_displayed
+          end
+          f('#uploaded_files > ul > li.folder .file .name').click
+          wait_for_ajaximations
+        rescue => err
+          # prevent the confirm dialog that pops up when you navigate away
+          # from the page from showing.
+          # TODO: actually figure out why the spec intermittently fails.
+          driver.execute_script "window.onbeforeunload = null;"
+          raise err
+        end
 
         expect_new_page_load { f('#submit_file_button').click }
 

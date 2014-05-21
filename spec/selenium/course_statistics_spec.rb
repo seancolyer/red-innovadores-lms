@@ -1,7 +1,7 @@
 require File.expand_path(File.dirname(__FILE__) + '/common')
 
 describe "course statistics" do
-  it_should_behave_like "in-process server selenium tests"
+  include_examples "in-process server selenium tests"
 
   before (:each) do
     course_with_teacher_logged_in
@@ -26,5 +26,10 @@ describe "course statistics" do
     users[1].should_not include_text "unknown"
     users[2].should include_text @student1.name
     users[2].should include_text "unknown"
+
+    links = ff('.item_list li a')
+    links[0]['href'].end_with?("/courses/#{@course.id}/users/#{@student2.id}").should == true
+    links[1]['href'].end_with?("/courses/#{@course.id}/users/#{@student3.id}").should == true
+    links[2]['href'].end_with?("/courses/#{@course.id}/users/#{@student1.id}").should == true
   end
 end
