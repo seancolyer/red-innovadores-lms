@@ -1,2 +1,0 @@
-require 'rails_development_boost'
-RailsDevelopmentBoost.init!

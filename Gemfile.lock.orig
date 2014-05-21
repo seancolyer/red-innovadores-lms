@@ -402,13 +402,20 @@ GEM
     treetop (1.4.15)
       polyglot
       polyglot (>= 0.3.1)
+<<<<<<< Updated upstream
     typhoeus (0.3.3)
       mime-types
     typhoid (0.0.1)
       typhoeus
+    unicorn (4.4.0)
+      kgio (~> 2.6)
+      rack
+      raindrops (~> 0.7)
+=======
     tzinfo (0.3.35)
     uniform_notifier (1.4.0)
     useragent (0.4.16)
+>>>>>>> Stashed changes
     uuid (2.3.2)
       macaddr (~> 1.0)
     uuidtools (2.1.4)
@@ -572,17 +579,22 @@ DEPENDENCIES
   subexec (= 0.0.4)
   syck (= 1.0.1)
   test-unit (= 1.2.3)
+<<<<<<< Updated upstream
+  timecop (= 0.5.9.1)
+  typhoid
+  unicorn
+=======
   thin (= 1.5.1)
   thor (= 0.18.1)
   thrift (= 0.8.0)
   thrift_client (= 0.8.4)
   timecop (= 0.6.3)
   treetop (= 1.4.15)
-  typhoid
   tzinfo (= 0.3.35)
   uniform_notifier (= 1.4.0)
   useragent (= 0.4.16)
   utf8_cleaner!
+>>>>>>> Stashed changes
   uuid (= 2.3.2)
   uuidtools (= 2.1.4)
   webmock (= 1.16.1)
