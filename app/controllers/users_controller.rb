@@ -1123,7 +1123,7 @@ class UsersController < ApplicationController
     end
 
     managed_attributes = []
-    managed_attributes.concat [:name, :short_name, :sortable_name] if @user.grants_right?(@current_user, nil, :rename)
+    managed_attributes.concat [:name, :short_name, :sortable_name, :email] if @user.grants_right?(@current_user, nil, :rename)
     managed_attributes << :terms_of_use if @user == (@real_current_user || @current_user)
     if @user.grants_right?(@current_user, nil, :manage_user_details)
       managed_attributes.concat([:time_zone, :locale])
@@ -1151,7 +1151,7 @@ class UsersController < ApplicationController
 
 
     if user_params == params[:user]
-      
+
       puts "================="
       puts user_params
       puts "================="
@@ -1531,7 +1531,7 @@ class UsersController < ApplicationController
       end
     end
   end
-  
+
   def pseudonym
     @user = api_find(User, params[:id])
     respond_to do |format|

@@ -26,7 +26,7 @@ class User < ActiveRecord::Base
 
   include Context
 
-  attr_accessible :name, :short_name, :sortable_name, :time_zone, :show_user_services, :gender, :visible_inbox_types, :avatar_image, :subscribe_to_emails, :locale, :bio, :birthdate, :terms_of_use, :self_enrollment_code, :initial_enrollment_type
+  attr_accessible :name, :short_name, :sortable_name, :time_zone, :show_user_services, :gender, :visible_inbox_types, :avatar_image, :subscribe_to_emails, :locale, :bio, :birthdate, :terms_of_use, :self_enrollment_code, :initial_enrollment_type, :email
   attr_accessor :previous_id, :menu_data
 
   before_save :infer_defaults
@@ -2111,7 +2111,7 @@ class User < ActiveRecord::Base
       self.class.default_storage_quota :
       accounts.sum(&:default_user_storage_quota)
   end
-  
+
   def self.default_storage_quota
     Setting.get('user_default_quota', 50.megabytes.to_s).to_i
   end
