@@ -14,7 +14,7 @@ html {
 body {
   background-color: transparent;
   font-family: 'Open Sans', sans-serif;
-  
+
   & > .container {
     width: 1350px;
   }
@@ -27,11 +27,11 @@ body > header {
   margin: 0;
   padding: 10px 0;
   width: 100%;
-  
+
   .container {
     width: 1120px;
   }
-  
+
 }
 
 
@@ -70,21 +70,20 @@ body > header {
     -moz-border-radius: 0px;
     border-radius: 0px;
   }
-  
-  
+
+
   .container {
     width: 1120px;
   }
-  
+
   .nav {
     padding: 5px 0;
     position: relative;
     left: 0;
     display: block;
     float: left;
-    margin: 0 10px 0 0;
+    margin: 0;
     margin-left: 0;
-    margin-bottom: 20px;
     list-style: none;
 
     & > li {
@@ -103,7 +102,7 @@ body > header {
         text-shadow: 0 1px 0 #056772;
         display: block;
         padding: 5px 15px 5px;
-        
+
         &:hover {
           background-color: transparent;
           color: #333333;

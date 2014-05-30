@@ -14,11 +14,13 @@ css_compressor: 'sass'
 
 
 stylesheets:
+  red_innovacion:
+      - public/stylesheets/compiled/application.css
   instructure_eportfolio:
     - public/stylesheets/compiled/instructure_eportfolio.css
-  course_show: 
+  course_show:
     - public/stylesheets/compiled/course_show.css
-  content_migrations: 
+  content_migrations:
     - public/stylesheets/compiled/content_migrations.css
   vendor:
     - public/stylesheets/compiled/g_vendor.css
@@ -39,9 +41,9 @@ stylesheets:
     - public/stylesheets/compiled/g_syllabus.css
     - public/stylesheets/compiled/g_mini_calendar.css
     - public/stylesheets/compiled/helpDialog.css
-  context_modules: 
+  context_modules:
     - public/stylesheets/compiled/context_modules.css
-  context_modules2: 
+  context_modules2:
     - public/stylesheets/compiled/context_modules2.css
   context_module_progressions:
       - public/stylesheets/compiled/context_module_progressions.css

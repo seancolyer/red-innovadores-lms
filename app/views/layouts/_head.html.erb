@@ -19,6 +19,8 @@
   <%= include_css_bundles %>
   <%= yield :stylesheets %>
   <%= include_account_css %>
+  <%= include_stylesheets variant_name_for(:red_innovacion), media: 'all' %>
+
   <script>
     // listen for any clicks on links that have href="#" and queue them to be fired on dom ready.
       function _earlyClick(e){
