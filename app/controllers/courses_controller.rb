@@ -331,8 +331,7 @@ class CoursesController < ApplicationController
 
       format.json {
         if params[:all].present?
-          courses = Course.all
-          courses = courses.where(workflow_state: params[:state]) if params[:state]
+          courses = params[:state].present? Course.where(workflow_state: params[:state]) : Course.all
 
           includes = Set.new(Array(params[:include]))
 
