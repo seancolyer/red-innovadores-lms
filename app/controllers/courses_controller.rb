@@ -338,7 +338,7 @@ class CoursesController < ApplicationController
           hash = []
           courses = Api.paginate(courses, self, api_v1_courses_url) if api_request?
           courses.each do |course|
-            hash << course_json(course, @current_user, session, includes, course)
+            hash << course_json(course, @current_user, session, includes, nil)
           end
           render :json => hash
         else
