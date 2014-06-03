@@ -332,10 +332,10 @@ class CoursesController < ApplicationController
       format.json {
         if params[:state]
           params[:state] += %w(created claimed) if params[:state].include? 'unpublished'
-          enrollments = @current_user.enrollments
+          enrollments = params[:all].present? ? Course.all : @current_user.enrollments
           enrollments = enrollments.reject { |e| !params[:state].include?(e.course.workflow_state) || (%w(StudentEnrollment ObserverEnrollment).include?(e.type) && %w(created claimed).include?(e.course.workflow_state))}
         else
-          enrollments = @current_user.cached_current_enrollments
+          enrollments = params[:all].present? ? Course.all : @current_user.cached_current_enrollments
         end
 
         if params[:enrollment_role]
