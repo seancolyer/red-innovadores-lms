@@ -26,14 +26,22 @@ class ConversationParticipant < ActiveRecord::Base
   belongs_to :user
   # deprecated
   has_many :conversation_message_participants
+
+  EXPORTABLE_ATTRIBUTES = [
+    :id, :conversation_id, :user_id, :last_message_at, :subscribed, :workflow_state, :last_authored_at, :has_attachments, :has_media_objects, :message_count,
+    :label, :tags, :visible_last_authored_at, :root_account_ids
+  ]
+
+  EXPORTABLE_ASSOCIATIONS = [:conversation, :user]
+
   after_destroy :destroy_conversation_message_participants
 
-  scope :visible, where("last_message_at IS NOT NULL")
-  scope :default, where(:workflow_state => ['read', 'unread'])
-  scope :unread, where(:workflow_state => 'unread')
-  scope :archived, where(:workflow_state => 'archived')
-  scope :starred, where(:label => 'starred')
-  scope :sent, where("visible_last_authored_at IS NOT NULL").order("visible_last_authored_at DESC, conversation_id DESC")
+  scope :visible, -> { where("last_message_at IS NOT NULL") }
+  scope :default, -> { where(:workflow_state => ['read', 'unread']) }
+  scope :unread, -> { where(:workflow_state => 'unread') }
+  scope :archived, -> { where(:workflow_state => 'archived') }
+  scope :starred, -> { where(:label => 'starred') }
+  scope :sent, -> { where("visible_last_authored_at IS NOT NULL").order("visible_last_authored_at DESC, conversation_id DESC") }
   scope :for_masquerading_user, lambda { |user|
     # site admins can see everything
     return scoped if user.account_users.map(&:account_id).include?(Account.site_admin.id)
@@ -501,14 +509,10 @@ class ConversationParticipant < ActiveRecord::Base
 
   def self.conversation_ids
     raise "conversation_ids needs to be scoped to a user" unless scoped.where_values.any? do |v|
-      if CANVAS_RAILS2
-        v =~ /user_id (?:= |IN \()\d+/
+      if v.is_a?(Arel::Nodes::Binary) && v.left.is_a?(Arel::Attributes::Attribute)
+        v.left.name == 'user_id'
       else
-        if v.is_a?(Arel::Nodes::Binary) && v.left.is_a?(Arel::Attributes::Attribute)
-          v.left.name == 'user_id'
-        else
-          v =~ /user_id (?:= |IN \()\d+/
-        end
+        v =~ /user_id (?:= |IN \()\d+/
       end
     end
     order = 'last_message_at DESC' unless scoped.order_values.present?

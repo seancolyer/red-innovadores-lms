@@ -657,7 +657,39 @@ describe "discussions" do
       let(:topic) { teacher_topic }
 
       before(:each) do
+        resize_screen_to_normal
         user_session(teacher)
+      end
+
+      describe "rubrics" do
+        it "should change points when used for grading" do
+          resize_screen_to_default
+          get "/courses/#{course.id}/discussion_topics/#{assignment_topic.id}"
+          wait_for_ajax_requests
+
+          f('.al-trigger').click
+          wait_for_ajaximations
+
+          fj('.icon-rubric').click
+          wait_for_ajaximations
+
+          new_points = get_value(".criterion_points")
+          dialog = fj(".ui-dialog:visible")
+          
+          keep_trying_until { fj(".grading_rubric_checkbox:visible").should be_displayed }
+          set_value fj(".grading_rubric_checkbox:visible", dialog), true
+
+          fj(".save_button:visible", dialog).click
+          wait_for_ajaximations
+
+          fj(".ui-button:contains('Change'):visible").click
+          wait_for_ajaximations
+
+          fj(".save_button:visible", dialog).click
+          wait_for_ajaximations
+
+          fj(".discussion-title").should include_text(new_points)
+        end
       end
 
       it "should escape correctly when posting an attachment" do
@@ -1109,11 +1141,11 @@ describe "discussions" do
           get url
           wait_for_ajaximations
 
-          f("#assignment_has_group_category").click
+          f("#has_group_category").click
           click_option("#assignment_group_category_id", group_cat.name)
 
           expect_new_page_load { f('.form-actions button[type=submit]').click }
-          topic.reload.assignment.group_category_id.should == group_cat.id
+          topic.reload.group_category_id.should == group_cat.id
         end
 
         it "should allow editing the peer review" do
@@ -1208,13 +1240,13 @@ describe "discussions" do
           topic.save!
 
           get url
-          wait_for_ajaximations
+
+          keep_trying_until { f('input[type=text][name="delayed_post_at"]').should be_displayed }
 
           f('input[type=text][name="delayed_post_at"]').clear
           f('input[type=text][name="lock_at"]').clear
 
           expect_new_page_load { f('.form-actions button[type=submit]').click }
-          wait_for_ajaximations
 
           topic.reload
           topic.delayed_post_at.should be_nil
@@ -1345,7 +1377,7 @@ describe "discussions" do
           wait_for_ajaximations
 
           f('input[type=checkbox][name="assignment[set_assignment]"]').click
-          f('#assignment_has_group_category').click
+          f('#has_group_category').click
           close_visible_dialog
           f('.btn-primary[type=submit]').click
           wait_for_ajaximations

@@ -180,23 +180,14 @@ describe UserMerge do
       user2.reload
       user2.communication_channels.map { |cc| [cc.path, cc.workflow_state] }.sort.should == [
           ['A@instructure.com', 'active'],
-          ['B@instructure.com', 'retired'],
           ['C@instructure.com', 'active'],
           ['D@instructure.com', 'unconfirmed'],
           ['E@instructure.com', 'unconfirmed'],
-          ['F@instructure.com', 'retired'],
           ['G@instructure.com', 'active'],
-          ['H@instructure.com', 'retired'],
           ['I@instructure.com', 'retired'],
-          ['a@instructure.com', 'retired'],
           ['b@instructure.com', 'active'],
-          ['c@instructure.com', 'retired'],
-          ['d@instructure.com', 'retired'],
-          ['e@instructure.com', 'retired'],
           ['f@instructure.com', 'unconfirmed'],
-          ['g@instructure.com', 'retired'],
           ['h@instructure.com', 'active'],
-          ['i@instructure.com', 'retired'],
           ['j@instructure.com', 'active'],
           ['k@instructure.com', 'active'],
           ['l@instructure.com', 'unconfirmed'],
@@ -204,7 +195,17 @@ describe UserMerge do
           ['n@instructure.com', 'retired'],
           ['o@instructure.com', 'retired']
       ]
-      user1.communication_channels.should be_empty
+      user1.communication_channels.map { |cc| [cc.path, cc.workflow_state] }.sort.should == [
+          ['a@instructure.com', 'retired'],
+          ['c@instructure.com', 'retired'],
+          ['d@instructure.com', 'retired'],
+          ['e@instructure.com', 'retired'],
+          ['g@instructure.com', 'retired'],
+          ['i@instructure.com', 'retired'],
+      ]
+      %w{B@instructure.com F@instructure.com H@instructure.com}.each do |path|
+        CommunicationChannel.where(user_id: [user1, user2]).by_path(path).detect { |cc| cc.path == path }.should be_nil
+      end
     end
 
     it "should move and uniquify enrollments" do
@@ -270,8 +271,8 @@ describe UserMerge do
       course1.enroll_user(user1)
       course1.enroll_user(user2)
 
-      observer1 = user_model
-      observer2 = user_model
+      observer1 = user_with_pseudonym
+      observer2 = user_with_pseudonym
       user1.observers << observer1 << observer2
       user2.observers << observer2
       ObserverEnrollment.count.should eql 3
@@ -612,18 +613,14 @@ describe UserMerge do
       @user2.reload
       @user2.communication_channels.map { |cc| [cc.path, cc.workflow_state] }.sort.should == [
           ['A@instructure.com', 'active'],
-          ['B@instructure.com', 'retired'],
           ['C@instructure.com', 'active'],
           ['D@instructure.com', 'unconfirmed'],
           ['E@instructure.com', 'unconfirmed'],
-          ['F@instructure.com', 'retired'],
           ['G@instructure.com', 'active'],
-          ['H@instructure.com', 'retired'],
           ['I@instructure.com', 'retired'],
           ['b@instructure.com', 'active'],
           ['f@instructure.com', 'unconfirmed'],
           ['h@instructure.com', 'active'],
-          ['i@instructure.com', 'retired'],
           ['j@instructure.com', 'active'],
           ['k@instructure.com', 'active'],
           ['l@instructure.com', 'unconfirmed'],
@@ -681,6 +678,8 @@ describe UserMerge do
       # should copy as a root_attachment (even though it isn't one currently)
       user1_attachment3 = Attachment.create!(:user => user1, :context => user1, :filename => "unique_name2.txt",
                                              :uploaded_data => StringIO.new("root_attachment_data"))
+      user1_attachment3.content_type = "text/plain"
+      user1_attachment3.save!
       user1_attachment3.root_attachment.should == root_attachment
 
       @shard1.activate do
@@ -709,6 +708,7 @@ describe UserMerge do
 
       new_user2_attachment2 = @user2.attachments.not_deleted.detect{|a| a.md5 == user1_attachment3.md5}
       new_user2_attachment2.root_attachment.should be_nil
+      new_user2_attachment2.content_type.should == "text/plain"
     end
 
     context "manual invitation" do

@@ -3,7 +3,6 @@ require [
 
   # true modules that we manage in this file
   'Backbone'
-  'compiled/widget/courseList'
   'compiled/helpDialog'
   'compiled/tours'
 
@@ -27,6 +26,8 @@ require [
   'compiled/behaviors/elementToggler'
   'compiled/behaviors/tooltip'
   'compiled/behaviors/instructure_inline_media_comment'
+  'compiled/behaviors/ping'
+  'compiled/behaviors/favicon'
 
   # other stuff several bundles use
   'media_comments'
@@ -45,8 +46,7 @@ require [
   'vendor/jquery.pageless'
   'vendor/jquery.scrollTo'
   'compiled/badge_counts'
-], ($, Backbone, courseList, helpDialog, tours) ->
-  courseList.init()
+], ($, Backbone, helpDialog, tours) ->
   helpDialog.initTriggers()
   tours.init()
 

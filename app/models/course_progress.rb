@@ -17,11 +17,7 @@
 #
 
 class CourseProgress
-  if CANVAS_RAILS2
-    include ActionController::UrlWriter
-  else
-    include Rails.application.routes.url_helpers
-  end
+  include Rails.application.routes.url_helpers
 
   attr_accessor :course, :user
 
@@ -43,19 +39,19 @@ class CourseProgress
                                   .where("context_module_id IN (?)", modules.map(&:id))
   end
 
-  def current_module_progression
+  def current_position
     return unless in_progress?
-    @_current_module_progresssion = current_module.evaluate_for(user)
+    @current_position ||= current_module.evaluate_for(user).current_position
   end
 
   def current_content_tag
     return unless in_progress?
-    current_position = current_module_progression.current_position
     current_module.content_tags.active.where(:position => current_position).first
   end
 
   def requirements
-    @_requirements ||= modules.flat_map(&:completion_requirements).map { |req| req[:id] }
+    @_requirements ||= modules.flat_map { |m| m.completion_requirements_visible_to(@user) }
+                              .map { |req| req[:id] }
   end
 
   def requirement_count

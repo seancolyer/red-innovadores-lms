@@ -7,7 +7,7 @@ require 'net/smtp'
 config = {
   :domain => "unknowndomain.example.com",
   :delivery_method => :smtp,
-}.merge((Setting.from_config("outgoing_mail") || {}).symbolize_keys)
+}.merge((ConfigFile.load("outgoing_mail") || {}).symbolize_keys)
 
 [:authentication, :delivery_method].each do |key|
   config[key] = config[key].to_sym if config.has_key?(key)
@@ -23,8 +23,9 @@ Rails.configuration.to_prepare do
   IncomingMailProcessor::MailboxAccount.default_outgoing_email = HostUrl.outgoing_email_address
 end
 
-# delivery_method can be :smtp, :sendmail or :test
+# delivery_method can be :smtp, :sendmail, :letter_opener, or :test
 ActionMailer::Base.delivery_method = config[:delivery_method]
+
 ActionMailer::Base.perform_deliveries = config[:perform_deliveries] if config.has_key?(:perform_deliveries)
 
 case config[:delivery_method]

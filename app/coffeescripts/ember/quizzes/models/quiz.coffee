@@ -1,7 +1,7 @@
 define [
   'ember'
   'ember-data'
-  'i18n!quizzes'
+  'i18n!quiz_model'
   '../shared/ic-ajax-jsonapi'
 ], (Em, DS, I18n, ajax) ->
 
@@ -10,18 +10,20 @@ define [
 
   Em.onerror = (error) ->
     console.log 'ERR', error, error.stack
+    throw new Ember.Error error
 
   {Model, attr} = DS
   Quiz = Model.extend
     title: attr()
     quizType: attr()
     links: attr()
+    #at some point we may need this as a relationship
+    assignmentId: attr()
     htmlURL: attr()
     # editURL is temporary until we have a real ember route for it
     editURL: (->
       "#{@get('htmlURL')}/edit"
     ).property('htmlURL')
-    allDates: attr()
     mobileURL: attr()
     description: attr()
     timeLimit: attr()
@@ -33,10 +35,14 @@ define [
     scoringPolicy: attr()
     oneQuestionAtATime: attr()
     questionCount: attr()
+    sectionCount: attr()
     accessCode: attr()
     ipFilter: attr()
     pointsPossible: attr()
     published: attr()
+    deleted: attr()
+    speedGraderUrl: attr()
+    moderateUrl: attr()
     allowedAttempts: attr('number')
     unpublishable: attr()
     canNotUnpublish: equal 'unpublishable', false
@@ -63,38 +69,61 @@ define [
     assignmentGroup: belongsTo 'assignment_group', async: true
     tScoringPolicy: (->
       switch @get('scoringPolicy')
-        when 'keep_highest' then I18n.t('highest', 'highest')
-        when 'keep_latest' then I18n.t('latest', 'latest')
+        when 'keep_highest' then I18n.t('keep_highest', 'Highest')
+        when 'keep_latest' then I18n.t('keep_latest', 'Latest')
     ).property('scoringPolicy')
     tQuizType: (->
       switch @get('quizType')
-        when 'assignment' then I18n.t 'assignment', 'Assignment'
+        when 'assignment' then I18n.t 'graded_quiz', 'Graded Quiz'
         when 'survey' then I18n.t 'survey', 'Survey'
         when 'graded_survey' then I18n.t 'graded_survey', 'Graded Survey'
         when 'practice_quiz' then I18n.t 'practice_quiz', 'Practice Quiz'
     ).property('quizType')
-    # temporary until we ship the show page with quiz submission info in ember
-    quizSubmissionHtmlURL: attr()
-    quizSubmissionHTML: (->
-      promise = ajax(
-        url: @get 'quizSubmissionHtmlURL'
-        dataType: 'html'
-        contentType: 'text/html'
-        headers:
-          Accept: 'text/html'
-      ).then (html) =>
-        @set 'didLoadQuizSubmissionHTML', true
-        { html: html }
-      PromiseObject.create promise: promise
-    ).property('quizSubmissionHtmlURL')
+    onlyVisibleToOverrides: attr()
+    daEnabled: ENV.FLAGS.differentiated_assignments
+    differentiatedAssignmentsApplies: Em.computed.and('daEnabled', 'onlyVisibleToOverrides')
+
+    quizSubmissionHtmlUrl: attr()
+    quizSubmissionVersionsHtmlUrl: attr()
+
     quizStatistics: hasMany 'quiz_statistics', async: true
     quizReports: hasMany 'quiz_report', async: true
+    users: hasMany 'user', async: true
+    studentQuizSubmissions: hasMany 'student_quiz_submission', async: true
     sortSlug: (->
       dateField = if @get('isAssignment') then 'dueAt' else 'lockAt'
       dueAt = @get(dateField)?.toISOString() or Quiz.SORT_LAST
       title = @get('title') or ''
       dueAt + title
     ).property('isAssignment', 'dueAt', 'lockAt', 'title')
+    assignmentOverrides: hasMany 'assignment_override'
+    allDates: (->
+      dates = []
+      overrides = @get('assignmentOverrides').toArray()
+      if (overrides.length == 0 || overrides.length != @get 'sectionCount') && !@get 'differentiatedAssignmentsApplies'
+        title = if overrides.length > 0
+          I18n.t('everyone_else', 'Everyone Else')
+        else
+          I18n.t('everyone', 'Everyone')
+        dates.push Ember.Object.create
+          lockAt: @get 'lockAt'
+          unlockAt: @get 'unlockAt'
+          dueAt: @get 'dueAt'
+          base: true
+          title: title
+
+      Ember.A(dates.concat(overrides))
+    ).property('lockAt', 'unlockAt', 'dueAt', 'sectionCount', 'assignmentOverrides.[]')
+    submittedStudents: hasMany 'submitted_student', polymporphic: true, async: true
+    unsubmittedStudents: hasMany 'unsubmitted_student', polymorphic: true, async: true
+    messageStudentsUrl: attr()
+    quizExtensionsUrl: attr()
+    quizSubmission: belongsTo 'quiz_submission'
+    quizSubmissions: alias('studentQuizSubmissions')
+    takeable: attr()
+    takeQuizUrl: attr()
+    quizSubmissionsZipUrl: attr()
+    previewUrl: attr()
 
   Quiz.SORT_LAST = 'ZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZZ'
 

@@ -49,7 +49,7 @@
     </div>
 
     <div class="header-group-right">
-      <div class="admin-links">
+      <div class="admin-links" role="application">
         <a class="al-trigger btn" role="button" aria-haspopup="true" aria-owns="manage-toolbar" href="#">
           <i class="icon-settings"></i>
           <i class="icon-mini-arrow-down"></i>
@@ -106,7 +106,7 @@
     </div>
     <div class="span6">
       <div class="admin-link-hover-area">
-        <div class="admin-links">
+        <div class="admin-links" role="application">
           <a class="al-trigger btn" role="button" aria-haspopup="true" aria-owns="manage-toolbar" href="#">
             <i class="icon-settings"></i>
             <i class="icon-mini-arrow-down"></i>
@@ -161,7 +161,7 @@
             <%= before_label(:quiz_instructions, "Quiz Instructions") %>
             <div style="float: right; font-size: 0.8em; cursor: pointer;">
               <a href="#" class="toggle_description_views_link"><%= t '#editor.switch_editor_html', "HTML Editor" %></a>
-              <a href="#" class="toggle_description_views_link" style="display:none;"><%= t '#editor.switch_editor_visual', "Visual Editor" %></a>
+              <a href="#" class="toggle_description_views_link" style="display:none;"><%= t '#editor.switch_editor_rich_text', "Rich Content Editor" %></a>
             </div>
             <textarea id="quiz_description" style="display: block;width: 100%;margin: 0px auto;height: 125px"><%= @quiz.description %></textarea>
           </div>
@@ -278,6 +278,13 @@
                     </div>
 
                     <div>
+                      <label class="checkbox" for="quiz_one_time_results">
+                        <%= check_box :quiz, :one_time_results %>
+                        <%= t(:one_time_results, "Only Once After Each Attempt") %>
+                      </label>
+                    </div>
+
+                    <div>
                       <label class="checkbox" for="quiz_show_correct_answers">
                         <%= check_box :quiz, :show_correct_answers %>
                         <%= t(:show_correct_answers, "Let Students See The Correct Answers") %>
@@ -370,6 +377,18 @@
               </div>
             </div>
           </fieldset>
+
+          <hr>
+
+          <% if @context.feature_enabled?(:differentiated_assignments) %>
+            <div class="text-center pad-box-mini" style="margin-bottom:10px">
+              <span>
+                <em>
+                <%= mt(:only_visible_to_overrides_note, "Note: This quiz is **only** visible to the section(s) specified below:") %>
+                </em>
+              </span>
+            </div>
+          <% end %>
 
           <div class="js-assignment-overrides"></div>
 
@@ -494,4 +513,3 @@
     </tbody>
   </table>
 </div>
-

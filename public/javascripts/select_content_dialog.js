@@ -120,8 +120,9 @@ $(document).ready(function() {
     $dialog.find('.alert').remove();
     $dialog.dialog('close');
   });
-  $("#select_context_content_dialog .item_title").keycodes('return', function() {
-    $(this).parents(".module_item_option").find(".add_item_button").click();
+  $("#select_context_content_dialog select, #select_context_content_dialog input[type=text], .module_item_select").keycodes('return', function(event) {
+    $(event.currentTarget).blur();
+    $(this).parents(".ui-dialog").find(".add_item_button").last().click();
   });
   $("#select_context_content_dialog .add_item_button").click(function() {
     var submit = function(item_data) {
@@ -137,6 +138,7 @@ $(document).ready(function() {
       var item_data = {
         'item[type]': $("#add_module_item_select").val(),
         'item[id]': $("#select_context_content_dialog .module_item_option:visible:first .module_item_select").val(),
+        'item[new_tab]': $("#external_url_create_new_tab").attr('checked') ? '1' : '0',
         'item[indent]': $("#content_tag_indent").val()
       }
       item_data['item[url]'] = $("#content_tag_create_url").val();
@@ -193,8 +195,13 @@ $(document).ready(function() {
 
             $("#select_context_content_dialog").loadingImage('remove');
             item_data['item[id]'] = obj.id;
-            item_data['item[title]'] = $("#select_context_content_dialog .module_item_option:visible:first .item_title").val();
-            item_data['item[title]'] = item_data['item[title]'] || obj.display_name
+            if (item_data['item[type]'] === 'attachment') {
+              // some browsers return a fake path in the file input value, so use the name returned by the server
+              item_data['item[title]'] = obj.display_name;
+            } else {
+              item_data['item[title]'] = $("#select_context_content_dialog .module_item_option:visible:first .item_title").val();
+              item_data['item[title]'] = item_data['item[title]'] || obj.display_name;
+            }
             var $option = $(document.createElement('option'));
             $option.val(obj.id).text(item_data['item[title]']);
             $("#" + item_data['item[type]'] + "s_select").find(".module_item_select option:last").after($option);

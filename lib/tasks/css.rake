@@ -7,9 +7,7 @@ namespace :css do
 
   desc "Compile css assets."
   task :generate do
-    require 'lib/multi_variant_compass_compiler'
-    include MultiVariantCompassCompiler
-    compile_all quiet: true, force: true, environment: :production
+    raise 'the new way to compile sass is with `npm run compile-sass`. FYI, it uses libsass and is much faster'
   end
 
 end

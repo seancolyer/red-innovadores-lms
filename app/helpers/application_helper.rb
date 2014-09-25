@@ -138,44 +138,10 @@ module ApplicationHelper
   end
 
   # Helper for easily checking vender/plugins/adheres_to_policy.rb
-  # policies from within a view.  Caches the response, but basically
-  # user calls object.grants_right?(user, nil, action)
+  # policies from within a view.
   def can_do(object, user, *actions)
     return false unless object
-    if object.is_a?(OpenObject) && object.type
-      obj = object.temporary_instance
-      if !obj
-        obj = object.type.classify.constantize.new
-        obj.instance_variable_set("@attributes", object.instance_variable_get("@table").with_indifferent_access)
-        obj.instance_variable_set("@new_record", false)
-        object.temporary_instance = obj
-      end
-      return can_do(obj, user, actions)
-    end
-    actions = Array(actions).flatten
-    if (object == @context || object.is_a?(Course)) && user == @current_user
-      @context_all_permissions ||= {}
-      @context_all_permissions[object.asset_string] ||= object.grants_rights?(user, session, nil)
-      return !(@context_all_permissions[object.asset_string].keys & actions).empty?
-    end
-    @permissions_lookup ||= {}
-    return true if actions.any? do |action|
-      lookup = [object ? object.asset_string : nil, user ? user.id : nil, action]
-      @permissions_lookup[lookup] if @permissions_lookup[lookup] != nil
-    end
-    begin
-      rights = object.grants_rights?(user, session, *actions)
-    rescue => e
-      logger.warn "#{object.inspect} raised an error while granting rights.  #{e.inspect}" if logger
-      return false
-    end
-    res = false
-    rights.each do |action, value|
-      lookup = [object ? object.asset_string : nil, user ? user.id : nil, action]
-      @permissions_lookup[lookup] = value
-      res ||= value
-    end
-    res
+    object.grants_any_right?(user, session, *actions)
   end
 
   # Loads up the lists of files needed for the wiki_sidebar.  Called from
@@ -294,9 +260,15 @@ module ApplicationHelper
   end
 
   def variant_name_for(bundle_name)
-    use_new_styles = @domain_root_account.feature_enabled?(:new_styles)
+    if k12?
+      variant = '_k12'
+    elsif use_new_styles?
+      variant = '_new_styles'
+    else
+      variant = '_legacy'
+    end
+
     use_high_contrast = @current_user && @current_user.prefers_high_contrast?
-    variant = use_new_styles ? '_new_styles' : '_legacy'
     variant += use_high_contrast ? '_high_contrast' : '_normal_contrast'
     "#{bundle_name}#{variant}"
   end
@@ -338,7 +310,14 @@ module ApplicationHelper
           hide = tab[:hidden] || tab[:hidden_unused]
           class_name = tab[:css_class].downcase.replace_whitespace("-")
           class_name += ' active' if @active_tab == tab[:css_class]
-          html << "<li class='section #{"section-tab-hidden" if hide }'>" + link_to(tab[:label], path, :class => class_name) + "</li>" if tab[:href]
+
+          if tab[:screenreader]
+            link = link_to(tab[:label], path, :class => class_name, "aria-label" => tab[:screenreader])
+          else
+            link = link_to(tab[:label], path, :class => class_name)
+          end
+
+          html << "<li class='section #{"section-tab-hidden" if hide }'>" + link + "</li>" if tab[:href]
         end
         html << "</ul></nav>"
         html.join("")
@@ -426,7 +405,7 @@ module ApplicationHelper
   end
 
   def show_user_create_course_button(user)
-    @domain_root_account.manually_created_courses_account.grants_rights?(user, session, :create_courses, :manage_courses).values.any?
+    @domain_root_account.manually_created_courses_account.grants_any_right?(user, session, :create_courses, :manage_courses)
   end
 
   # Public: Create HTML for a sidebar button w/ icon.
@@ -635,7 +614,7 @@ module ApplicationHelper
       :collection_size        => all_courses_count,
       :more_link_for_over_max => courses_path,
       :title                  => t('#menu.my_courses', "My Courses"),
-      :link_text              => t('#layouts.menu.view_all_enrollments', 'View all courses'),
+      :link_text              => t('#layouts.menu.view_all_or_customize', 'View All or Customize'),
       :edit                   => t("#menu.customize", "Customize")
     }
   end
@@ -662,16 +641,6 @@ module ApplicationHelper
       :title => t('#menu.managed_accounts', "Managed Accounts"),
       :link_text => t('#layouts.menu.view_all_accounts', 'View all accounts')
     }
-  end
-
-  def show_home_menu?
-    @current_user.set_menu_data(session[:enrollment_uuid])
-    [
-      @current_user.menu_courses(session[:enrollment_uuid]),
-      @current_user.all_accounts,
-      @current_user.cached_current_group_memberships,
-      @current_user.enrollments.ended
-    ].any?{ |e| e.respond_to?(:count) && e.count > 0 }
   end
 
   def cache_if(cond, *args)
@@ -764,7 +733,7 @@ module ApplicationHelper
   end
 
   def include_account_css
-    return if params[:global_includes] == '0'
+    return if params[:global_includes] == '0' || @domain_root_account.try(:feature_enabled?, :k12) || @domain_root_account.try(:feature_enabled?, :use_new_styles)
     includes = get_global_includes.inject([]) do |css_includes, global_include|
       css_includes << global_include[:css] if global_include[:css].present?
       css_includes
@@ -776,18 +745,34 @@ module ApplicationHelper
   end
 
   # this should be the same as friendlyDatetime in handlebars_helpers.coffee
-  def friendly_datetime(datetime, opts={})
-    attributes = { :title => datetime }
+  def friendly_datetime(datetime, opts={}, attributes={})
     attributes[:pubdate] = true if opts[:pubdate]
-    if CANVAS_RAILS2 # see config/initializers/rails2.rb
-      content_tag_without_nil_return(:time, attributes) do
-        datetime_string(datetime)
-      end
-    else
-      content_tag(:time, attributes) do
-        datetime_string(datetime)
+    context = opts[:context]
+    tag_type = opts.fetch(:tag_type, :time)
+    if datetime.present?
+      attributes[:title] ||= context_sensitive_datetime_title(datetime, context, just_text: true)
+      attributes['data-tooltip'] ||= 'top'
+    end
+
+    content_tag(tag_type, attributes) do
+      datetime_string(datetime)
+    end
+  end
+
+  def context_sensitive_datetime_title(datetime, context, options={})
+    just_text = options.fetch(:just_text, false)
+    return "" unless datetime.present?
+    local_time = datetime_string(datetime)
+    text = local_time
+    if context.present?
+      course_time = datetime_string(datetime, :event, nil, false, context.time_zone)
+      if course_time != local_time
+        text = "#{I18n.t('#helpers.local', "Local")}: #{local_time}<br>#{I18n.t('#helpers.course', "Course")}: #{course_time}".html_safe
       end
     end
+
+    return text if just_text
+    "data-tooltip title=\"#{text}\"".html_safe
   end
 
   # render a link with a tooltip containing a summary of due dates
@@ -843,10 +828,12 @@ module ApplicationHelper
   end
 
   def dashboard_url(opts={})
+    return super(opts) if opts[:login_success]
     custom_dashboard_url || super(opts)
   end
 
   def dashboard_path(opts={})
+    return super(opts) if opts[:login_success]
     custom_dashboard_url || super(opts)
   end
 
@@ -855,6 +842,15 @@ module ApplicationHelper
     if url.present?
       url += "?current_user_id=#{@current_user.id}" if @current_user
       url
+    end
+  end
+
+  def include_custom_meta_tags
+    if @meta_tags.present?
+      @meta_tags.
+        map{ |meta_attrs| tag("meta", meta_attrs) }.
+        join("\n").
+        html_safe
     end
   end
 end

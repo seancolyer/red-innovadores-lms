@@ -73,36 +73,8 @@ describe CommunicationChannel do
     @cc.state.should eql(:active)
   end
   
-  it "should reset the bounce count when re_activating" do
-    communication_channel_model
-    @cc.bounce_count = 1
-    @cc.confirm
-    @cc.bounce_count.should eql(1)
-    @cc.retire
-    @cc.re_activate
-    @cc.bounce_count.should eql(0)
-  end
-  
-  it "should retire the communication channel if it's been bounced 5 times" do
-    communication_channel_model
-    @cc.bounce_count = 5
-    @cc.state.should eql(:unconfirmed)
-    @cc.save
-    @cc.state.should eql(:retired)
-    
-    communication_channel_model
-    @cc.bounce_count = 4
-    @cc.save
-    @cc.state.should eql(:unconfirmed)
-
-    communication_channel_model
-    @cc.bounce_count = 6
-    @cc.save
-    @cc.state.should eql(:retired)
-  end
-  
   it "should set a confirmation code unless one has been set" do
-    CanvasUuid::Uuid.expects(:generate).at_least(1).returns('abc123')
+    CanvasSlug.expects(:generate).at_least(1).returns('abc123')
     communication_channel_model
     @cc.confirmation_code.should eql('abc123')
   end
@@ -200,10 +172,6 @@ describe CommunicationChannel do
     @user.communication_channels.create!(:path => 'user2@example.com')
     # should allow a different path_type
     @user.communication_channels.create!(:path => 'user1@example.com', :path_type => 'sms')
-    # should allow a retired duplicate
-    @user.communication_channels.create!(:path => 'user1@example.com') { |cc| cc.workflow_state = 'retired' }
-    # the unconfirmed should still be valid, even though a retired exists
-    @cc.should be_valid
   end
 
   context "notifications" do
@@ -234,10 +202,9 @@ describe CommunicationChannel do
   end
 
   describe "merge candidates" do
+    let_once(:user1) { User.create! }
+    let_once(:cc1) { user1.communication_channels.create!(:path => 'jt@instructure.com') }
     it "should return users with a matching e-mail address" do
-      user1 = User.create!
-      cc1 = user1.communication_channels.create!(:path => 'jt@instructure.com')
-
       user2 = User.create!
       cc2 = user2.communication_channels.create!(:path => 'jt@instructure.com')
       cc2.confirm!
@@ -248,9 +215,6 @@ describe CommunicationChannel do
     end
 
     it "should not return users without an active pseudonym" do
-      user1 = User.create!
-      cc1 = user1.communication_channels.create!(:path => 'jt@instructure.com')
-
       user2 = User.create!
       cc2 = user2.communication_channels.create!(:path => 'jt@instructure.com')
       cc2.confirm!
@@ -260,9 +224,6 @@ describe CommunicationChannel do
     end
 
     it "should not return users that match on an unconfirmed cc" do
-      user1 = User.create!
-      cc1 = user1.communication_channels.create!(:path => 'jt@instructure.com')
-
       user2 = User.create!
       cc2 = user2.communication_channels.create!(:path => 'jt@instructure.com')
       Account.default.pseudonyms.create!(:user => user2, :unique_id => 'user2')
@@ -272,9 +233,6 @@ describe CommunicationChannel do
     end
 
     it "should only check one user for boolean result" do
-      user1 = User.create!
-      cc1 = user1.communication_channels.create!(:path => 'jt@instructure.com')
-
       user2 = User.create!
       cc2 = user2.communication_channels.create!(:path => 'jt@instructure.com')
       cc2.confirm!
@@ -288,14 +246,28 @@ describe CommunicationChannel do
       cc1.has_merge_candidates?.should be_true
     end
 
+    describe ".bounce_for_path" do
+      it "flags paths with too many bounces" do
+        @cc1 = communication_channel_model(path: 'not_as_bouncy@example.edu')
+        @cc2 = communication_channel_model(path: 'bouncy@example.edu')
+
+        %w{bouncy@example.edu Bouncy@example.edu bOuNcY@Example.edu bouncy@example.edu not_as_bouncy@example.edu bouncy@example.edu}.each{|path| CommunicationChannel.bounce_for_path(path)}
+
+        @cc1.reload
+        @cc1.bounce_count.should == 1
+        @cc1.bouncing?.should be_falsey
+
+        @cc2.reload
+        @cc2.bounce_count.should == 5
+        @cc2.bouncing?.should be_truthy
+      end
+    end
+
     context "sharding" do
       specs_require_sharding
 
       it "should find a match on another shard" do
         Enrollment.stubs(:cross_shard_invitations?).returns(true)
-        user1 = User.create!
-        cc1 = user1.communication_channels.create!(:path => 'jt@instructure.com')
-
         @shard1.activate do
           @user2 = User.create!
           cc2 = @user2.communication_channels.create!(:path => 'jt@instructure.com')
@@ -312,8 +284,6 @@ describe CommunicationChannel do
 
       it "should search a non-default shard *only*" do
         Enrollment.stubs(:cross_shard_invitations?).returns(false)
-        user1 = User.create!
-        cc1 = user1.communication_channels.create!(:path => 'jt@instructure.com')
         cc1.confirm!
         Account.default.pseudonyms.create!(:user => user1, :unique_id => 'user1')
 
@@ -327,6 +297,35 @@ describe CommunicationChannel do
 
         cc1.merge_candidates.should == []
         @cc2.merge_candidates.should == []
+      end
+
+      describe ".bounce_for_path" do
+        it "flags paths with too many bounces" do
+          @cc1 = communication_channel_model(path: 'not_as_bouncy@example.edu')
+          @shard1.activate do
+            @cc2 = communication_channel_model(path: 'bouncy@example.edu')
+          end
+
+          pending if CommunicationChannel.associated_shards('bouncy@example.edu') == [Shard.default]
+
+          @shard2.activate do
+            @cc3 = communication_channel_model(path: 'BOUNCY@example.edu')
+          end
+
+          %w{bouncy@example.edu Bouncy@example.edu bOuNcY@Example.edu bouncy@example.edu not_as_bouncy@example.edu bouncy@example.edu}.each{|path| CommunicationChannel.bounce_for_path(path)}
+
+          @cc1.reload
+          @cc1.bounce_count.should == 1
+          @cc1.bouncing?.should be_falsey
+
+          @cc2.reload
+          @cc2.bounce_count.should == 5
+          @cc2.bouncing?.should be_truthy
+
+          @cc3.reload
+          @cc3.bounce_count.should == 5
+          @cc3.bouncing?.should be_truthy
+        end
       end
     end
   end

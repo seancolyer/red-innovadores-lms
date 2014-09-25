@@ -39,12 +39,12 @@ describe "Files API", type: :request do
     include_examples 'a locked api item'
   end
 
-  before do
+  before :once do
     course_with_teacher(:active_all => true, :user => user_with_pseudonym)
   end
 
   describe "api_create_success" do
-    before do
+    before :once do
       @attachment = Attachment.new
       @attachment.context = @course
       @attachment.filename = "test.txt"
@@ -126,6 +126,20 @@ describe "Files API", type: :request do
       @attachment.reload.file_state.should == 'available'
     end
 
+    it "should render the response as text/html when in app" do
+      s3_storage!
+      FilesController.any_instance.stubs(:in_app?).returns(true)
+
+      AWS::S3::S3Object.any_instance.expects(:head).returns({
+                                          :content_type => 'text/plain',
+                                          :content_length => 1234,
+                                      })
+
+      raw_api_call(:post, "/api/v1/files/#{@attachment.id}/create_success?uuid=#{@attachment.uuid}",
+               {:controller => "files", :action => "api_create_success", :format => "json", :id => @attachment.to_param, :uuid => @attachment.uuid})
+      response.headers["content-type"].should == "text/html; charset=utf-8"
+    end
+
     it "should fail for an incorrect uuid" do
       upload_data
       raw_api_call(:post, "/api/v1/files/#{@attachment.id}/create_success?uuid=abcde",
@@ -166,7 +180,7 @@ describe "Files API", type: :request do
   end
 
   describe "#index" do
-    append_before do
+    before :once do
       @root = Folder.root_folders(@course).first
       @f1 = @root.sub_folders.create!(:name => "folder1", :context => @course)
       @a1 = Attachment.create!(:filename => 'ztest.txt', :display_name => "ztest.txt", :position => 1, :uploaded_data => StringIO.new('file'), :folder => @f1, :context => @course)
@@ -235,7 +249,7 @@ describe "Files API", type: :request do
     end
 
     context "content_types" do
-      before do
+      before :once do
         txt = attachment_model :display_name => 'thing.txt', :content_type => 'text/plain', :context => @course, :folder => @f1
         png = attachment_model :display_name => 'thing.png', :content_type => 'image/png', :context => @course, :folder => @f1
         gif = attachment_model :display_name => 'thing.gif', :content_type => 'image/gif', :context => @course, :folder => @f1
@@ -281,7 +295,7 @@ describe "Files API", type: :request do
   end
 
   describe "#index for courses" do
-    append_before do
+    before :once do
       @root = Folder.root_folders(@course).first
       @f1 = @root.sub_folders.create!(:name => "folder1", :context => @course)
       @a1 = Attachment.create!(:filename => 'ztest.txt', :display_name => "ztest.txt", :position => 1, :uploaded_data => StringIO.new('file'), :folder => @f1, :context => @course)
@@ -393,7 +407,7 @@ describe "Files API", type: :request do
     end
 
     context "content_types" do
-      before do
+      before :once do
         txt = attachment_model :display_name => 'thing.txt', :content_type => 'text/plain', :context => @course, :folder => @f1
         png = attachment_model :display_name => 'thing.png', :content_type => 'image/png', :context => @course, :folder => @f1
         gif = attachment_model :display_name => 'thing.gif', :content_type => 'image/gif', :context => @course, :folder => @f1
@@ -423,8 +437,25 @@ describe "Files API", type: :request do
     end
   end
 
+  describe "#index other contexts" do
+    it "should operate on groups" do
+      group_model
+      attachment_model display_name: 'foo', content_type: 'text/plain', context: @group, folder: Folder.root_folders(@group).first
+      account_admin_user
+      json = api_call(:get, "/api/v1/groups/#{@group.id}/files", { controller: "files", action: "api_index", format: "json", group_id: @group.to_param })
+      json.map{|r| r['id']}.should eql [@attachment.id]
+    end
+
+    it "should operate on users" do
+      user_model
+      attachment_model display_name: 'foo', content_type: 'text/plain', context: @user, folder: Folder.root_folders(@user).first
+      json = api_call(:get, "/api/v1/users/#{@user.id}/files", { controller: "files", action: "api_index", format: "json", user_id: @user.to_param })
+      json.map{|r| r['id']}.should eql [@attachment.id]
+    end
+  end
+
   describe "#show" do
-    append_before do
+    before :once do
       @root = Folder.root_folders(@course).first
       @att = Attachment.create!(:filename => 'test.png', :display_name => "test-frd.png", :uploaded_data => stub_png_data, :folder => @root, :context => @course)
       @file_path = "/api/v1/files/#{@att.id}"
@@ -546,7 +577,7 @@ describe "Files API", type: :request do
   end
 
   describe "#destroy" do
-    append_before do
+    before :once do
       @root = Folder.root_folders(@course).first
       @att = Attachment.create!(:filename => 'test.txt', :display_name => "test.txt", :uploaded_data => StringIO.new('file'), :folder => @root, :context => @course)
       @file_path = "/api/v1/files/#{@att.id}"
@@ -570,7 +601,7 @@ describe "Files API", type: :request do
   end
 
   describe "#update" do
-    append_before do
+    before :once do
       @root = Folder.root_folders(@course).first
       @att = Attachment.create!(:filename => 'test.txt', :display_name => "test.txt", :uploaded_data => StringIO.new('file'), :folder => @root, :context => @course)
       @file_path = "/api/v1/files/#{@att.id}"
@@ -613,7 +644,7 @@ describe "Files API", type: :request do
   end
 
   describe "quota" do
-    let(:t_course) do
+    let_once(:t_course) do
       course_with_teacher_logged_in active_all: true
       @course.storage_quota = 111.megabytes
       @course.save
@@ -621,7 +652,7 @@ describe "Files API", type: :request do
       @course
     end
 
-    let(:t_teacher) do
+    let_once(:t_teacher) do
       t_course.teachers.first
     end
 

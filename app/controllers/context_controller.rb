@@ -200,7 +200,8 @@ class ContextController < ApplicationController
         :permissions => {
           :manage_students => (manage_students = @context.grants_right?(@current_user, session, :manage_students)),
           :manage_admin_users => (manage_admins = @context.grants_right?(@current_user, session, :manage_admin_users)),
-          :add_users => manage_students || manage_admins
+          :add_users => manage_students || manage_admins,
+          :read_reports => @context.grants_right?(@current_user, session, :read_reports)
         },
         :course => {
           :id => @context.id,
@@ -226,18 +227,10 @@ class ContextController < ApplicationController
 
   def prior_users
     if authorized_action(@context, @current_user, [:manage_students, :manage_admin_users, :read_prior_roster])
-      if CANVAS_RAILS2
-        @prior_users = @context.prior_users.
-          where(Enrollment.not_fake.proxy_options[:conditions]).
-          select("users.*, NULL AS prior_enrollment").
-          by_top_enrollment.
-          paginate(:page => params[:page], :per_page => 20)
-      else
-        @prior_users = @context.prior_users.
-          select("users.*, NULL AS prior_enrollment").
-          by_top_enrollment.merge(Enrollment.not_fake).
-          paginate(:page => params[:page], :per_page => 20)
-      end
+      @prior_users = @context.prior_users.
+        select("users.*, NULL AS prior_enrollment").
+        by_top_enrollment.merge(Enrollment.not_fake).
+        paginate(:page => params[:page], :per_page => 20)
 
       users = @prior_users.index_by(&:id)
       if users.present?

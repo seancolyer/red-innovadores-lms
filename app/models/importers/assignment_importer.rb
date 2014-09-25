@@ -9,7 +9,7 @@ module Importers
       assignments.each do |assign|
         if migration.import_object?("assignments", assign['migration_id'])
           begin
-            import_from_migration(assign, migration.context)
+            import_from_migration(assign, migration.context, migration)
           rescue
             migration.add_import_warning(t('#migration.assignment_type', "Assignment"), assign[:title], $!)
           end
@@ -26,7 +26,7 @@ module Importers
       end
     end
 
-    def self.import_from_migration(hash, context, item=nil, quiz=nil)
+    def self.import_from_migration(hash, context, migration=nil, item=nil, quiz=nil)
       hash = hash.with_indifferent_access
       return nil if hash[:migration_id] && hash[:assignments_to_import] && !hash[:assignments_to_import][hash[:migration_id]]
       item ||= Assignment.find_by_context_type_and_context_id_and_id(context.class.to_s, context.id, hash[:id])
@@ -38,10 +38,21 @@ module Importers
       if hash[:instructions_in_html] == false
         self.extend TextHelper
       end
-      hash[:missing_links] = {:description => [], :instructions => [], }
+
+      missing_links = {:description => [], :instructions => []}
       description = ""
-      description += hash[:instructions_in_html] == false ? ImportedHtmlConverter.convert_text(hash[:description] || "", context) : ImportedHtmlConverter.convert(hash[:description] || "", context, {:missing_links => hash[:missing_links][:description]})
-      description += hash[:instructions_in_html] == false ? ImportedHtmlConverter.convert_text(hash[:instructions] || "", context) : ImportedHtmlConverter.convert(hash[:instructions] || "", context, {:missing_links => hash[:missing_links][:instructions]})
+      if hash[:instructions_in_html] == false
+        description += ImportedHtmlConverter.convert_text(hash[:description] || "", context)
+        description += ImportedHtmlConverter.convert_text(hash[:instructions] || "", context)
+      else
+        description += ImportedHtmlConverter.convert(hash[:description] || "", context, migration) do |warn, link|
+          missing_links[:description] << link if warn == :missing_link
+        end
+        description += ImportedHtmlConverter.convert(hash[:instructions] || "", context, migration) do |warn, link|
+          missing_links[:instructions] << link if warn == :missing_link
+        end
+      end
+
       description += Attachment.attachment_list_from_migration(context, hash[:attachment_ids])
       item.description = description
 
@@ -149,12 +160,12 @@ module Importers
         item.send("#{prop}=", hash[prop]) unless hash[prop].nil?
       end
 
-      context.imported_migration_items << item if context.imported_migration_items && new_record
+      migration.add_imported_item(item) if migration
       item.save_without_broadcasting!
 
-      if context.respond_to?(:content_migration) && context.content_migration
-        hash[:missing_links].each do |field, missing_links|
-          context.content_migration.add_missing_content_links(:class => item.class.to_s,
+      if migration
+        missing_links.each do |field, missing_links|
+          migration.add_missing_content_links(:class => item.class.to_s,
             :id => item.id, :field => field, :missing_links => missing_links,
             :url => "/#{context.class.to_s.underscore.pluralize}/#{context.id}/#{item.class.to_s.demodulize.underscore.pluralize}/#{item.id}")
         end
@@ -164,12 +175,8 @@ module Importers
         tag = item.create_external_tool_tag(:url => hash[:external_tool_url], :new_tab => hash[:external_tool_new_tab])
         tag.content_type = 'ContextExternalTool'
         if !tag.save
-          context.add_migration_warning(t('errors.import.external_tool_url', "The url for the external tool assignment \"%{assignment_name}\" wasn't valid.", :assignment_name => item.title)) if tag.errors["url"]
-          if CANVAS_RAILS2
-            item.external_tool_tag = nil
-          else
-            item.association(:external_tool_tag).target = nil # otherwise it will trigger destroy on the tag
-          end
+          migration.add_warning(t('errors.import.external_tool_url', "The url for the external tool assignment \"%{assignment_name}\" wasn't valid.", :assignment_name => item.title)) if migration && tag.errors["url"]
+          item.association(:external_tool_tag).target = nil # otherwise it will trigger destroy on the tag
         end
       end
 

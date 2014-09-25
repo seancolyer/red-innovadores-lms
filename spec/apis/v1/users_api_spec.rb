@@ -35,9 +35,7 @@ class TestUserApi
 end
 
 describe Api::V1::User do
-  before do
-    @test_api = TestUserApi.new
-    @test_api.services_enabled = []
+  before :once do
     @admin = account_admin_user
     course_with_student(:user => user_with_pseudonym(:name => 'Student', :username => 'pvuser@example.com'))
     @student = @user
@@ -45,6 +43,11 @@ describe Api::V1::User do
     @user = @admin
     Account.default.tap { |a| a.enable_service(:avatars) }.save
     user_with_pseudonym(:user => @user)
+  end
+
+  before :each do
+    @test_api = TestUserApi.new
+    @test_api.services_enabled = []
   end
 
   context 'user_json' do
@@ -98,6 +101,28 @@ describe Api::V1::User do
         }
     end
 
+    it 'should use an sis pseudonym from another account if necessary' do
+      @user = User.create!(:name => 'User')
+      @account2 = Account.create!
+      @user.pseudonyms.create!(:unique_id => 'abc', :account => @account2) { |p| p.sis_user_id = 'a'}
+      Account.default.any_instantiation.stubs(:trust_exists?).returns(true)
+      Account.default.any_instantiation.stubs(:trusted_account_ids).returns([@account2.id])
+      HostUrl.expects(:context_host).with(@account2).returns('school1')
+      @user.stubs(:find_pseudonym_for_account).with(Account.default).returns(@pseudonym)
+      @test_api.user_json(@user, @admin, {}, [], Account.default).should == {
+          'name' => 'User',
+          'sortable_name' => 'User',
+          'id' => @user.id,
+          'short_name' => 'User',
+          'login_id' => 'abc',
+          'sis_login_id' => 'abc',
+          'sis_user_id' => 'a',
+          'integration_id' => nil,
+          'root_account' => 'school1',
+          'sis_import_id' => nil,
+      }
+    end
+
     it 'should use the correct pseudonym' do
       @user = User.create!(:name => 'User')
       @account2 = Account.create!
@@ -114,12 +139,15 @@ describe Api::V1::User do
     end
 
     context "computed scores" do
-      before do
+      before :once do
         @enrollment.computed_current_score = 95.0;
         @enrollment.computed_final_score = 85.0;
-        def @course.grading_standard_enabled?; true; end
         @student1_enrollment = @enrollment
         @student2 = course_with_student(:course => @course).user
+      end
+
+      before :each do
+        def @course.grading_standard_enabled?; true; end
       end
 
       it "should return scores as admin" do
@@ -222,7 +250,7 @@ describe "Users API", type: :request do
     "http://www.example.com/images/users/#{User.avatar_key(id)}?fallback=http%3A%2F%2Fwww.example.com%2Fimages%2Fmessages%2Favatar-50.png"
   end
 
-  before do
+  before :once do
     @admin = account_admin_user
     course_with_student(:user => user_with_pseudonym(:name => 'Student', :username => 'pvuser@example.com', :active_user => true))
     @student.pseudonym.update_attribute(:sis_user_id, 'sis-user-id')
@@ -290,13 +318,18 @@ describe "Users API", type: :request do
   include_examples "page view api"
 
   describe "cassandra page views" do
+    before do
+      # can't use :once'd @student, since cassandra doesn't reset
+      student_in_course(:course => @course, :user => user_with_pseudonym(:name => 'Student', :username => 'pvuser2@example.com', :active_user => true))
+      @user = @admin
+    end
     include_examples "cassandra page views"
     include_examples "page view api"
   end
 
   it "shouldn't find users in other root accounts by sis id" do
     acct = account_model(:name => 'other root')
-    acct.add_user(@user)
+    acct.account_users.create!(user: @user)
     @me = @user
     course_with_student(:account => acct, :active_all => true, :user => user_with_pseudonym(:name => 's2', :username => 'other@example.com'))
     @other_user = @user
@@ -345,13 +378,13 @@ describe "Users API", type: :request do
 
     it "should limit the maximum number of users returned" do
       @account = @user.account
-      15.times do |n|
+      3.times do |n|
         user = User.create(:name => "u#{n}")
         user.pseudonyms.create!(:unique_id => "u#{n}@example.com", :account => @account)
       end
-      api_call(:get, "/api/v1/accounts/#{@account.id}/users?per_page=12", :controller => "users", :action => "index", :account_id => @account.id.to_param, :format => 'json', :per_page => '12').size.should == 12
-      Setting.set('api_max_per_page', '5')
-      api_call(:get, "/api/v1/accounts/#{@account.id}/users?per_page=12", :controller => "users", :action => "index", :account_id => @account.id.to_param, :format => 'json', :per_page => '12').size.should == 5
+      api_call(:get, "/api/v1/accounts/#{@account.id}/users?per_page=2", :controller => "users", :action => "index", :account_id => @account.id.to_param, :format => 'json', :per_page => '2').size.should == 2
+      Setting.set('api_max_per_page', '1')
+      api_call(:get, "/api/v1/accounts/#{@account.id}/users?per_page=2", :controller => "users", :action => "index", :account_id => @account.id.to_param, :format => 'json', :per_page => '2').size.should == 1
     end
 
     it "should return unauthorized for users without permissions" do
@@ -420,9 +453,9 @@ describe "Users API", type: :request do
     end
 
     context 'as a site admin' do
-      before do
+      before :once do
         @site_admin = user_with_pseudonym
-        Account.site_admin.add_user(@site_admin)
+        Account.site_admin.account_users.create!(user: @site_admin)
       end
 
       it "should allow site admins to create users" do
@@ -491,7 +524,7 @@ describe "Users API", type: :request do
     end
 
     context "as a non-administrator" do
-      before do
+      before :once do
         user(active_all: true)
       end
 
@@ -608,7 +641,7 @@ describe "Users API", type: :request do
   end
 
   describe "user account updates" do
-    before do
+    before :once do
       # an outer before sets this
       @student.pseudonym.update_attribute(:sis_user_id, nil)
 
@@ -739,7 +772,7 @@ describe "Users API", type: :request do
   end
 
   describe "user settings" do
-    before do
+    before :once do
       course_with_student(active_all: true)
       account_admin_user
     end
@@ -878,7 +911,7 @@ describe "Users API", type: :request do
   end
 
   describe "user deletion" do
-    before do
+    before :once do
       @admin = account_admin_user
       course_with_student(:user => user_with_pseudonym(:name => 'Student', :username => 'student@example.com'))
       @student = @user
@@ -964,8 +997,8 @@ describe "Users API", type: :request do
     end
   end
 
-    describe "user merge" do
-    before do
+  describe "user merge" do
+    before :once do
       @account = Account.default
       @user1 = user_with_managed_pseudonym(
         active_all: true, account: @account, name: 'Jony Ive',

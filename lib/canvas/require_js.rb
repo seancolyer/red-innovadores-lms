@@ -61,15 +61,19 @@ module Canvas
           :common => 'compiled/bundles/common',
           :jqueryui => 'vendor/jqueryui',
           :uploadify => '../flash/uploadify/jquery.uploadify-3.1.min',
-          'ic-dialog' => 'vendor/ic-dialog/dist/main.amd'
         }.update(cache_busting ? cache_busting_paths : {}).update(plugin_paths).update(Canvas::RequireJs::PluginExtension.paths).to_json.gsub(/([,{])/, "\\1\n    ")
       end
 
       def packages
         @packages ||= [
-          {'name' => 'ic-ajax', 'location' => 'bower/ic-ajax'},
+          {'name' => 'ic-ajax', 'location' => 'bower/ic-ajax/dist/amd'},
           {'name' => 'ic-styled', 'location' => 'bower/ic-styled'},
           {'name' => 'ic-menu', 'location' => 'bower/ic-menu'},
+          {'name' => 'ic-tabs', 'location' => 'bower/ic-tabs/dist/amd'},
+          {'name' => 'ic-droppable', 'location' => 'bower/ic-droppable/dist/amd'},
+          {'name' => 'ic-sortable', 'location' => 'bower/ic-sortable/dist/amd'},
+          {'name' => 'ic-modal', 'location' => 'bower/ic-modal/dist/amd'},
+          {'name' => 'ic-lazy-list', 'location' => 'bower/ic-lazy-list'},
           {'name' => 'ember-qunit', 'location' => 'bower/ember-qunit/dist/amd'},
         ].to_json
       end
@@ -91,6 +95,10 @@ module Canvas
       def shims
         <<-JS.gsub(%r{\A +|^ {8}}, '')
           {
+            'bower/react-router/dist/react-router': {
+              deps: ['react'],
+              exports: 'ReactRouter'
+            },
             'bower/ember/ember': {
               deps: ['jquery', 'handlebars'],
               exports: 'Ember'

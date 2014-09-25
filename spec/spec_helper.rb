@@ -16,40 +16,33 @@
 # with this program. If not, see <http://www.gnu.org/licenses/>.
 #
 
-require File.expand_path(File.dirname(__FILE__) + '/../config/canvas_rails3')
-if CANVAS_RAILS2
-  Spec::Example::ExampleGroupMethods.module_eval do
-    def include_examples(*args)
-      it_should_behave_like(*args)
-    end
-  end
+begin
+  require RUBY_VERSION >= '2.0.0' ? 'byebug' : 'debugger'
+rescue LoadError
 end
 
-unless CANVAS_RAILS2
-  Spec.configure do |c|
-   c.treat_symbols_as_metadata_keys_with_true_values = true
-  end
+RSpec.configure do |c|
+  c.treat_symbols_as_metadata_keys_with_true_values = true
+  c.color = true
 
-  RSpec.configure do |c|
-    c.around(:each) do |example|
-      attempts = 0
-      begin
-        Timeout::timeout(180) {
-          example.run
-        }
-        if ENV['AUTORERUN']
-          e = @example.instance_variable_get('@exception')
-          if !e.nil? && (attempts += 1) < 2 && !example.metadata[:no_retry]
-            puts "FAILURE: #{@example.description} \n #{e}".red
-            puts "RETRYING: #{@example.description}".yellow
-            @example.instance_variable_set('@exception', nil)
-            redo
-          elsif e.nil? && attempts != 0
-            puts "SUCCESS: retry passed for \n #{@example.description}".green
-          end
+  c.around(:each) do |example|
+    attempts = 0
+    begin
+      Timeout::timeout(180) {
+        example.run
+      }
+      if ENV['AUTORERUN']
+        e = @example.instance_variable_get('@exception')
+        if !e.nil? && (attempts += 1) < 2 && !example.metadata[:no_retry]
+          puts "FAILURE: #{@example.description} \n #{e}".red
+          puts "RETRYING: #{@example.description}".yellow
+          @example.instance_variable_set('@exception', nil)
+          redo
+        elsif e.nil? && attempts != 0
+          puts "SUCCESS: retry passed for \n #{@example.description}".green
         end
-      end until true
-    end
+      end
+    end until true
   end
 end
 
@@ -61,136 +54,96 @@ end
 ENV["RAILS_ENV"] = 'test'
 
 require File.expand_path('../../config/environment', __FILE__) unless defined?(Rails)
-if CANVAS_RAILS2
-  require 'spec'
-  # require 'spec/autorun'
-  require 'spec/rails'
+require 'rspec/rails'
 
-  # integration specs were renamed to request specs in rspec 2
-  def describe_with_rspec2_types(*args, &block)
-    unless args.last.is_a?(Hash)
-      args << {}
+ActionView::TestCase::TestController.view_paths = ApplicationController.view_paths
+
+module RSpec::Rails
+  module ViewExampleGroup
+    module ExampleMethods
+      # normally in rspec 2, assigns returns a newly constructed hash
+      # which means that 'assigns[:key] = value' in view specs does nothing
+      def assigns
+        @assigns ||= super
+      end
+
+      alias :view_assigns :assigns
+
+      delegate :content_for, :to => :view
+
+      def render_with_helpers(*args)
+        controller_class = ("#{@controller.controller_path.camelize}Controller".constantize rescue nil) || ApplicationController
+
+        controller_class.instance_variable_set(:@js_env, nil)
+        # this extends the controller's helper methods to the view
+        # however, these methods are delegated to the test controller
+        view.singleton_class.class_eval do
+          include controller_class._helpers unless included_modules.include?(controller_class._helpers)
+        end
+
+        # so create a "real_controller"
+        # and delegate the helper methods to it
+        @controller.singleton_class.class_eval do
+          attr_accessor :real_controller
+
+          controller_class._helper_methods.each do |helper|
+            delegate helper, :to => :real_controller
+          end
+        end
+
+        real_controller = controller_class.new
+        real_controller.instance_variable_set(:@_request, @controller.request)
+        @controller.real_controller = real_controller
+
+        # just calling "render 'path/to/view'" by default looks for a partial
+        if args.first && args.first.is_a?(String)
+          file = args.shift
+          args = [{:template => file}] + args
+        end
+        render_without_helpers(*args)
+      end
+
+      alias_method_chain :render, :helpers
     end
-    raise "please use type: :request instead of type: :integration for rspec 2 compatibility" if args.last[:type] == :integration
-    if args.last[:type] == :request
-      args.last[:type] = :integration
-    end
-    args.last[:location] ||= caller(0)[1]
-    describe_without_rspec2_types(*args, &block)
   end
 
-  alias :describe_without_rspec2_types :describe
-  alias :describe :describe_with_rspec2_types
+  module Matchers
+    class HaveTag
+      include ActionDispatch::Assertions::SelectorAssertions
+      include Test::Unit::Assertions
 
-  ActionController::TestProcess.module_eval do
-    def process_with_use_route_shim(action, parameters = nil, session = nil, flash = nil, http_method = 'GET')
-      if parameters.is_a?(Hash)
-        parameters.delete(:use_route)
+      def initialize(expected)
+        @expected = expected
       end
-      process_without_use_route_shim(action, parameters, session, flash, http_method)
-    end
 
-    alias_method_chain :process, :use_route_shim
-  end
+      def matches?(html, &block)
+        @selected = [HTML::Document.new(html).root]
+        assert_select(*@expected, &block)
+        return !@failed
+      end
 
-  Spec::Rails::Example::ViewExampleGroup.class_eval do
-    alias :view :template
-
-    def content_for(name)
-      response.capture(name)
-    end
-  end
-else
-  require 'rspec/rails'
-
-  ActionView::TestCase::TestController.view_paths = ApplicationController.view_paths
-
-  module RSpec::Rails
-    module ViewExampleGroup
-      module ExampleMethods
-        # normally in rspec 2, assigns returns a newly constructed hash
-        # which means that 'assigns[:key] = value' in view specs does nothing
-        def assigns
-          @assigns ||= super
+      def assert(val, msg=nil)
+        unless !!val
+          @msg = msg
+          @failed = true
         end
+      end
 
-        alias :view_assigns :assigns
+      def failure_message_for_should
+        @msg
+      end
 
-        delegate :content_for, :to => :view
-
-        def render_with_helpers(*args)
-          controller_class = ("#{@controller.controller_path.camelize}Controller".constantize rescue nil) || ApplicationController
-
-          controller_class.instance_variable_set(:@js_env, nil)
-          # this extends the controller's helper methods to the view
-          # however, these methods are delegated to the test controller
-          view.singleton_class.class_eval do
-            include controller_class._helpers unless included_modules.include?(controller_class._helpers)
-          end
-
-          # so create a "real_controller"
-          # and delegate the helper methods to it
-          @controller.singleton_class.class_eval do
-            attr_accessor :real_controller
-
-            controller_class._helper_methods.each do |helper|
-              delegate helper, :to => :real_controller
-            end
-          end
-
-          real_controller = controller_class.new
-          real_controller.instance_variable_set(:@_request, @controller.request)
-          @controller.real_controller = real_controller
-
-          # just calling "render 'path/to/view'" by default looks for a partial
-          if args.first && args.first.is_a?(String)
-            file = args.shift
-            args = [{:template => file}] + args
-          end
-          render_without_helpers(*args)
-        end
-
-        alias_method_chain :render, :helpers
+      def failure_message_for_should_not
+        @msg
       end
     end
 
-    module Matchers
-      class HaveTag
-        include ActionDispatch::Assertions::SelectorAssertions
-        include Test::Unit::Assertions
-
-        def initialize(expected)
-          @expected = expected
-        end
-
-        def matches?(html, &block)
-          @selected = [HTML::Document.new(html).root]
-          assert_select(*@expected, &block)
-          return !@failed
-        end
-
-        def assert(val, msg=nil)
-          unless !!val
-            @msg = msg
-            @failed = true
-          end
-        end
-
-        def failure_message_for_should
-          @msg
-        end
-
-        def failure_message_for_should_not
-          @msg
-        end
-      end
-
-      def have_tag(*args)
-        HaveTag.new(args)
-      end
+    def have_tag(*args)
+      HaveTag.new(args)
     end
   end
 end
+
 require 'action_controller_test_process'
 require File.expand_path(File.dirname(__FILE__) + '/mocha_rspec_adapter')
 require File.expand_path(File.dirname(__FILE__) + '/mocha_extensions')
@@ -201,13 +154,11 @@ require 'handlebars_tasks'
 
 # if mocha was initialized before rails (say by another spec), CollectionProxy would have
 # undef_method'd them; we need to restore them
-unless CANVAS_RAILS2
-  Mocha::ObjectMethods.instance_methods.each do |m|
-    ActiveRecord::Associations::CollectionProxy.class_eval <<-RUBY
-      def #{m}; end
-      remove_method #{m.inspect}
-    RUBY
-  end
+Mocha::ObjectMethods.instance_methods.each do |m|
+  ActiveRecord::Associations::CollectionProxy.class_eval <<-RUBY
+    def #{m}; end
+    remove_method #{m.inspect}
+  RUBY
 end
 
 Dir.glob("#{File.dirname(__FILE__).gsub(/\\/, "/")}/factories/*.rb").each { |file| require file }
@@ -277,15 +228,6 @@ def truncate_all_tables
   end
 end
 
-def truncate_all_cassandra_tables
-  Canvas::Cassandra::DatabaseBuilder.config_names.each do |cass_config|
-    db = Canvas::Cassandra::DatabaseBuilder.from_config(cass_config)
-    db.tables.each do |table|
-      db.execute("TRUNCATE #{table}")
-    end
-  end
-end
-
 # wipe out the test db, in case some non-transactional tests crapped out before
 # cleaning up after themselves
 truncate_all_tables
@@ -320,6 +262,12 @@ Mocha::Mock.class_eval do
     raise "Mocks aren't really serializeable!"
   end
 
+  def to_yaml(opts = {})
+    YAML.quick_emit(self.object_id, opts) do |out|
+      out.scalar(nil, 'null')
+    end
+  end
+
   def respond_to_with_marshalling?(symbol, include_private = false)
     return true if [:marshal_dump, :marshal_load].include?(symbol)
     respond_to_without_marshalling?(symbol, include_private)
@@ -328,7 +276,7 @@ Mocha::Mock.class_eval do
   alias_method_chain :respond_to?, :marshalling
 end
 
-[ActiveSupport::Cache::MemoryStore, (CANVAS_RAILS2 ? NilStore : ActiveSupport::Cache::NullStore)].each do |store|
+[ActiveSupport::Cache::MemoryStore, ActiveSupport::Cache::NullStore].each do |store|
   store.class_eval do
     def write_with_serialization_check(name, value, options = nil)
       Marshal.dump(value)
@@ -339,20 +287,17 @@ end
   end
 end
 
-unless CANVAS_RAILS2
-  ActiveSupport::Cache::NullStore.class_eval do
-    def fetch_with_serialization_check(name, options = {}, &block)
-      result = fetch_without_serialization_check(name, options, &block)
-      Marshal.dump(result) if result
-      result
-    end
-
-    alias_method_chain :fetch, :serialization_check
+ActiveSupport::Cache::NullStore.class_eval do
+  def fetch_with_serialization_check(name, options = {}, &block)
+    result = fetch_without_serialization_check(name, options, &block)
+    Marshal.dump(result) if result
+    result
   end
+
+  alias_method_chain :fetch, :serialization_check
 end
 
-matchers_module = (CANVAS_RAILS2 ? Spec::Matchers : RSpec::Matchers)
-matchers_module.define :encompass do |expected|
+RSpec::Matchers.define :encompass do |expected|
   match do |actual|
     if expected.is_a?(Array) && actual.is_a?(Array)
       expected.size == actual.size && expected.zip(actual).all? { |e, a| a.slice(*e.keys) == e }
@@ -364,7 +309,7 @@ matchers_module.define :encompass do |expected|
   end
 end
 
-matchers_module.define :match_ignoring_whitespace do |expected|
+RSpec::Matchers.define :match_ignoring_whitespace do |expected|
   def whitespaceless(str)
     str.gsub(/\s+/, '')
   end
@@ -402,22 +347,50 @@ if ActiveRecord::Base.connection.adapter_name == 'PostgreSQL' &&
   end
 end
 
-(CANVAS_RAILS2 ? Spec::Runner : RSpec).configure do |config|
+RSpec.configure do |config|
   # If you're not using ActiveRecord you should remove these
   # lines, delete config/database.yml and disable :active_record
   # in your config/boot.rb
   config.use_transactional_fixtures = true
   config.use_instantiated_fixtures = false
   config.fixture_path = Rails.root+'spec/fixtures/'
-
-  ((config.debug = true) rescue nil) unless CANVAS_RAILS2
+  config.infer_spec_type_from_file_location!
 
   config.include Helpers
 
+  config.include Onceler::BasicHelpers
+
+  # rspec 2+ only runs global before(:all)'s before the top-level
+  # groups, not before each nested one. so we need to reset some
+  # things to play nicely with its caching
+  Onceler.configure do |c|
+    c.before :record do
+      Account.clear_special_account_cache!(true)
+      AdheresToPolicy::Cache.clear
+      Folder.reset_path_lookups!
+    end
+  end
+
+  Onceler.instance_eval do
+    # since once-ler creates potentially multiple levels of transaction
+    # nesting, we need a way to know the base level so we can compare it
+    # to AR::Conn#open_transactions. that will tell us if something is
+    # "committed" or not (from the perspective of the spec)
+    def base_transactions
+      # if not recording, it's presumed we're in a spec, in which case
+      # transactional fixtures add one more level
+      open_transactions + (recording? ? 0 : 1)
+    end
+  end
+
+  Notification.after_create { Notification.reset_cache! }
   config.before :all do
     # so before(:all)'s don't get confused
-    Account.clear_special_account_cache!
-    Notification.after_create { Notification.reset_cache! }
+    Account.clear_special_account_cache!(true)
+    AdheresToPolicy::Cache.clear
+
+    # allow tests to still run in non-draft state even though it's hard-coded on
+    Feature.definitions["draft_state"].send(:instance_variable_set, '@state', 'allowed')
   end
 
   def delete_fixtures!
@@ -425,21 +398,27 @@ end
     # in g/24755
   end
 
+  # UTC for tests, cuz it's easier :P
+  Account.time_zone_attribute_defaults[:default_time_zone] = 'UTC'
+
   config.before :each do
     I18n.locale = :en
     Time.zone = 'UTC'
-    Account.clear_special_account_cache!
-    Account.default.update_attribute(:default_time_zone, 'UTC')
+    LoadAccount.force_special_account_reload = true
+    Account.clear_special_account_cache!(true)
+    AdheresToPolicy::Cache.clear
     Setting.reset_cache!
+    ConfigFile.unstub
     HostUrl.reset_cache!
     Notification.reset_cache!
     ActiveRecord::Base.reset_any_instantiation!
     Attachment.clear_cached_mime_ids
+    Folder.reset_path_lookups!
     RoleOverride.clear_cached_contexts
     Delayed::Job.redis.flushdb if Delayed::Job == Delayed::Backend::Redis::Job
-    truncate_all_cassandra_tables
     Rails::logger.try(:info, "Running #{self.class.description} #{@method_name}")
     Attachment.domain_namespace = nil
+    $spec_api_tokens = {}
   end
 
   # flush redis before the first spec, and before each spec that comes after
@@ -520,17 +499,12 @@ end
     account = opts[:account] || Account.default
     @user = opts[:user] || account.shard.activate { user(opts) }
     @admin = @user
-    account_user = @user.account_users.build(:account => account, :membership_type => opts[:membership_type] || 'AccountAdmin')
-    account_user.shard = account.shard
-    account_user.save!
+    account.account_users.create!(:user => @user, :membership_type => opts[:membership_type])
     @user
   end
 
   def site_admin_user(opts={})
-    @user = opts[:user] || user(opts)
-    @admin = @user
-    Account.site_admin.add_user(@user, opts[:membership_type] || 'AccountAdmin')
-    @user
+    account_admin_user(opts.merge(account: Account.site_admin))
   end
 
   def user(opts={})
@@ -556,8 +530,6 @@ end
       cc.workflow_state = 'active' if opts[:active_cc] || opts[:active_all]
       cc.workflow_state = opts[:cc_state] if opts[:cc_state]
     end
-    @cc.should_not be_nil
-    @cc.should_not be_new_record
     @cc
   end
 
@@ -594,7 +566,6 @@ end
     pseudonym(user, opts)
     @pseudonym.sis_user_id = opts[:sis_user_id] || "U001"
     @pseudonym.save!
-    @pseudonym.should be_managed_password
     @pseudonym
   end
 
@@ -683,6 +654,17 @@ end
     user_session(@user)
   end
 
+  def course_with_student_submissions(opts={})
+    course_with_teacher_logged_in(opts)
+    student_in_course
+    submission_count = opts[:submissions] || 1
+    submission_count.times do |s|
+      assignment = @course.assignments.create!(:title => "test #{s} assignment")
+      submission = assignment.submissions.create!(:assignment_id => assignment.id, :user_id => @student.id)
+      submission.update_attributes!(score: '5') if opts[:submission_points]
+    end
+  end
+
   def set_course_draft_state(enabled=true, opts={})
     course = opts[:course] || @course
     account = opts[:account] || course.account
@@ -716,9 +698,11 @@ end
     req_service = opts[:required_account_service] || nil
     roles = opts[:roles] || []
     message = opts[:message] || "hi there"
+    subj = opts[:subject] || "this is a subject"
     @account = opts[:account] || Account.default
-    @announcement = @account.announcements.build(message: message, required_account_service: req_service)
+    @announcement = @account.announcements.build(subject: subj, message: message, required_account_service: req_service)
     @announcement.start_at = opts[:start_at] || 5.minutes.ago.utc
+    @announcement.end_at = opts[:end_at] || 1.day.from_now.utc
     @announcement.account_notification_roles.build(roles.map { |r| {account_notification_id: @announcement.id, role_type: r} }) unless roles.empty?
     @announcement.save!
   end
@@ -857,7 +841,8 @@ end
     @group2 = course.groups.create!(:name => "group 2", :group_category => group_category)
 
     @topic = course.discussion_topics.build(:title => "topic")
-    @assignment = course.assignments.build(:submission_types => 'discussion_topic', :title => @topic.title, :group_category => @group1.group_category)
+    @topic.group_category = group_category
+    @assignment = course.assignments.build(:submission_types => 'discussion_topic', :title => @topic.title)
     @assignment.infer_times
     @assignment.saved_by = :discussion_topic
     @topic.assignment = @assignment
@@ -962,17 +947,13 @@ end
   end
 
   def eportfolio(opts={})
-    user(opts)
+    user(opts) unless @user
     @portfolio = @user.eportfolios.create!
   end
 
   def eportfolio_with_user(opts={})
+    user(opts)
     eportfolio(opts)
-  end
-
-  def eportfolio_with_user_logged_in(opts={})
-    eportfolio_with_user(opts)
-    user_session(@user)
   end
 
   def conversation(*users)
@@ -1004,12 +985,8 @@ end
   end
 
   def assert_page_not_found(&block)
-    if CANVAS_RAILS2
-      block.should raise_exception(ActiveRecord::RecordNotFound)
-    else
-      yield
-      assert_status(404)
-    end
+    yield
+    assert_status(404)
   end
 
   def assert_require_login
@@ -1045,11 +1022,10 @@ end
     update_with_protected_attributes!(ar_instance, attrs) rescue false
   end
 
-  def process_csv_data(*lines_or_opts)
-    account_model unless @account
-
-    lines = lines_or_opts.reject { |thing| thing.is_a? Hash }
-    opts = lines_or_opts.select { |thing| thing.is_a? Hash }.inject({:allow_printing => false}, :merge)
+  def process_csv_data(*lines)
+    opts = lines.extract_options!
+    opts.reverse_merge!(allow_printing: false)
+    account = opts[:account] || @account || account_model
 
     tmp = Tempfile.new("sis_rspec")
     path = "#{tmp.path}.csv"
@@ -1057,7 +1033,7 @@ end
     File.open(path, "w+") { |f| f.puts lines.flatten.join "\n" }
     opts[:files] = [path]
 
-    importer = SIS::CSV::Import.process(@account, opts)
+    importer = SIS::CSV::Import.process(account, opts)
 
     File.unlink path
 
@@ -1072,10 +1048,6 @@ end
 
   def enable_cache(new_cache=:memory_store)
     new_cache ||= :null_store
-    if CANVAS_RAILS2 && new_cache == :null_store
-      require 'nil_store'
-      new_cache = NilStore.new
-    end
     new_cache = ActiveSupport::Cache.lookup_store(new_cache)
     previous_cache = Rails.cache
     Rails.stubs(:cache).returns(new_cache)
@@ -1173,7 +1145,7 @@ end
 
       BACKENDS.map(&:instance_methods).flatten.uniq.each do |method|
         # overridden by Attachment anyway; don't re-overwrite it
-        next if Attachment.instance_method(method).owner == Attachment
+        next if base.instance_method(method).owner == base
         if method.to_s[-1..-1] == '='
           base.class_eval <<-CODE
           def #{method}(arg)
@@ -1200,13 +1172,20 @@ end
   end
 
   def s3_storage!(opts = {:stubs => true})
-    Attachment.send(:include, AttachmentStorageSwitcher) unless Attachment.ancestors.include?(AttachmentStorageSwitcher)
-    Attachment.stubs(:current_backend).returns(Technoweenie::AttachmentFu::Backends::S3Backend)
+    [Attachment, Thumbnail].each do |model|
+      model.send(:include, AttachmentStorageSwitcher) unless model.ancestors.include?(AttachmentStorageSwitcher)
+      model.stubs(:current_backend).returns(Technoweenie::AttachmentFu::Backends::S3Backend)
 
-    Attachment.stubs(:s3_storage?).returns(true)
-    Attachment.stubs(:local_storage?).returns(false)
+      model.stubs(:s3_storage?).returns(true)
+      model.stubs(:local_storage?).returns(false)
+    end
+
     if opts[:stubs]
       conn = mock('AWS::S3::Client')
+
+      AWS::S3::S3Object.any_instance.stubs(:read).returns("i am stub data from spec helper. nom nom nom")
+      AWS::S3::S3Object.any_instance.stubs(:write).returns(true)
+      AWS::S3::S3Object.any_instance.stubs(:create_temp_file).returns(true)
       AWS::S3::S3Object.any_instance.stubs(:client).returns(conn)
       AWS::Core::Configuration.any_instance.stubs(:access_key_id).returns('stub_id')
       AWS::Core::Configuration.any_instance.stubs(:secret_access_key).returns('stub_key')
@@ -1221,11 +1200,14 @@ end
   end
 
   def local_storage!
-    Attachment.send(:include, AttachmentStorageSwitcher) unless Attachment.ancestors.include?(AttachmentStorageSwitcher)
-    Attachment.stubs(:current_backend).returns(Technoweenie::AttachmentFu::Backends::FileSystemBackend)
+    [Attachment, Thumbnail].each do |model|
+      model.send(:include, AttachmentStorageSwitcher) unless model.ancestors.include?(AttachmentStorageSwitcher)
+      model.stubs(:current_backend).returns(Technoweenie::AttachmentFu::Backends::FileSystemBackend)
 
-    Attachment.stubs(:s3_storage?).returns(false)
-    Attachment.stubs(:local_storage?).returns(true)
+      model.stubs(:s3_storage?).returns(false)
+      model.stubs(:local_storage?).returns(true)
+    end
+
     Attachment.local_storage?.should eql(true)
     Attachment.s3_storage?.should eql(false)
     Attachment.local_storage?.should eql(true)
@@ -1366,14 +1348,19 @@ end
     end
   end
 
+  # frd class, not a mock, so we can once-ler WebConferences (need to Marshal.dump)
+  class WebConferencePluginMock
+    attr_reader :id, :settings
+    def initialize(id, settings)
+      @id = id
+      @settings = settings
+    end
+    def valid_settings?; true; end
+    def enabled?; true; end
+    def base; end
+  end
   def web_conference_plugin_mock(id, settings)
-    mock = mock("WebConferencePlugin")
-    mock.stubs(:id).returns(id)
-    mock.stubs(:settings).returns(settings)
-    mock.stubs(:valid_settings?).returns(true)
-    mock.stubs(:enabled?).returns(true)
-    mock.stubs(:base).returns(nil)
-    mock
+    WebConferencePluginMock.new(id, settings)
   end
 
   def dummy_io
@@ -1400,11 +1387,7 @@ end
   end
 
   def consider_all_requests_local(value)
-    if CANVAS_RAILS2
-      ActionController::Base.consider_all_requests_local = value
-    else
-      Rails.application.config.consider_all_requests_local = value
-    end
+    Rails.application.config.consider_all_requests_local = value
   end
 
   def page_view_for(opts={})
@@ -1413,7 +1396,7 @@ end
 
     @request_id = opts[:request_id] || RequestContextGenerator.request_id
     unless @request_id
-      @request_id = UUIDSingleton.instance.generate
+      @request_id = CanvasUUID.generate
       RequestContextGenerator.stubs(:request_id => @request_id)
     end
 
@@ -1440,6 +1423,117 @@ end
     @page_view.save!
     @page_view
   end
+
+  # a fast way to create a record, especially if you don't need the actual
+  # ruby object. since it just does a straight up insert, you need to
+  # provide any non-null attributes or things that would normally be
+  # inferred/defaulted prior to saving
+  def create_record(klass, attributes, return_type = :id)
+    create_records(klass, [attributes], return_type)[0]
+  end
+
+  # a little wrapper around bulk_insert that gives you back records or ids
+  # in order
+  # NOTE: if you decide you want to go add something like this to canvas
+  # proper, make sure you have it handle concurrent inserts (this does
+  # not, because READ COMMITTED is the default transaction isolation
+  # level)
+  def create_records(klass, records, return_type = :id)
+    return [] if records.empty?
+    klass.transaction do
+      klass.connection.bulk_insert klass.table_name, records
+      scope = klass.order("id DESC").limit(records.size)
+      return_type == :record ?
+        scope.all.reverse :
+        scope.pluck(:id).reverse
+    end
+  end
+
+  # create a bunch of courses at once, optionally enrolling a user in them
+  # records can either be the number of records to create, or an array of
+  # hashes of attributes you want to insert
+  def create_courses(records, options = {})
+    account = options[:account] || Account.default
+    records = records.times.map{ {} } if records.is_a?(Fixnum)
+    records = records.map { |record| course_valid_attributes.merge(account_id: account.id, root_account_id: account.id, workflow_state: 'available', enrollment_term_id: account.default_enrollment_term.id).merge(record) }
+    course_data = create_records(Course, records, options[:return_type])
+    course_ids = options[:return_type] == :record ?
+      course_data.map(&:id) :
+      course_data
+
+    if options[:account_associations]
+      create_records(CourseAccountAssociation, course_ids.map{ |id| {account_id: account.id, course_id: id, depth: 0}})
+    end
+    if user = options[:enroll_user]
+      section_ids = create_records(CourseSection, course_ids.map{ |id| {course_id: id, root_account_id: account.id, name: "Default Section", default_section: true}})
+      type = options[:enrollment_type] || "TeacherEnrollment"
+      create_records(Enrollment, course_ids.each_with_index.map{ |id, i| {course_id: id, user_id: user.id, type: type, course_section_id: section_ids[i], root_account_id: account.id, workflow_state: 'active'}})
+    end
+    course_data
+  end
+
+  def create_users(records, options = {})
+    records = records.times.map{ {} } if records.is_a?(Fixnum)
+    records = records.map { |record| valid_user_attributes.merge(workflow_state: "registered").merge(record) }
+    create_records(User, records, options[:return_type])
+  end
+
+  # create a bunch of users at once, and enroll them all in the same course
+  def create_users_in_course(course, records, options = {})
+    user_data = create_users(records, options)
+    create_enrollments(course, user_data, options)
+
+    user_data
+  end
+
+  def create_enrollments(course, users, options = {})
+    user_ids = users.first.is_a?(User) ?
+      users.map(&:id) :
+      users
+
+    if options[:account_associations]
+      create_records(UserAccountAssociation, user_ids.map{ |id| {account_id: course.account_id, user_id: id, depth: 0}})
+    end
+
+    section_id = options[:section_id] || course.default_section.id
+    type = options[:enrollment_type] || "StudentEnrollment"
+    create_records(Enrollment, user_ids.map{ |id| {course_id: course.id, user_id: id, type: type, course_section_id: section_id, root_account_id: course.account.id, workflow_state: 'active'}}, options[:return_type])
+  end
+
+  def create_assignments(course_ids, count_per_course = 1, fields = {})
+    course_ids = Array(course_ids)
+    course_ids *= count_per_course
+    create_records(Assignment, course_ids.each_with_index.map { |id, i| {context_id: id, context_type: 'Course', context_code: "course_#{id}", title: "#{id}:#{i}", workflow_state: 'published'}.merge(fields)})
+  end
+end
+
+class I18nema::Backend
+  def stub(translations)
+    @stubs = translations.with_indifferent_access
+    singleton_class.instance_eval do
+      alias_method :lookup, :lookup_with_stubs
+      alias_method :available_locales, :available_locales_with_stubs
+    end
+    yield
+  ensure
+    singleton_class.instance_eval do
+      alias_method :lookup, :lookup_without_stubs
+      alias_method :available_locales, :available_locales_without_stubs
+    end
+    @stubs = nil
+  end
+
+  def lookup_with_stubs(locale, key, scope = [], options = {})
+    init_translations unless initialized?
+    keys = normalize_keys(locale, key, scope, options[:separator])
+    keys.inject(@stubs){ |h,k| h[k] if h.respond_to?(:key) } || direct_lookup(*keys)
+  end
+  alias_method :lookup_without_stubs, :lookup
+
+  def available_locales_with_stubs
+    available_locales_without_stubs | @stubs.keys.map(&:to_sym)
+  end
+  alias_method :available_locales_without_stubs, :available_locales
 end
 
 class String

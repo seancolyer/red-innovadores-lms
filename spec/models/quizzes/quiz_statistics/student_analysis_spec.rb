@@ -6,7 +6,7 @@ require 'csv'
 describe Quizzes::QuizStatistics::StudentAnalysis do
   let(:report_type) { 'student_analysis' }
   include_examples "Quizzes::QuizStatistics::Report"
-  before { course }
+  before(:once) { course }
 
   def csv(opts = {}, quiz = @quiz)
     stats = quiz.statistics_csv('student_analysis', opts)
@@ -44,7 +44,8 @@ describe Quizzes::QuizStatistics::StudentAnalysis do
     student_in_course :course => @course, :user => @user3
     sub = q.generate_submission(@user1)
     sub.workflow_state = 'complete'
-    sub.submission_data = [{ :points => 15, :text => "", :correct => "undefined", :question_id => question.id }]
+    sub.submission_data = [{ :points => 10, :text => "", :correct => "undefined", :question_id => question.id }]
+    # simulate a positive fudge of 5 points:
     sub.score = 15
     sub.with_versioning(true, &:save!)
     stats = q.statistics
@@ -223,6 +224,20 @@ describe Quizzes::QuizStatistics::StudentAnalysis do
       stats.last[9].should == '5'
     end
 
+    it 'should include primary domain if trust exists' do
+      account2 = Account.create!
+      HostUrl.stubs(:context_host).returns('school')
+      HostUrl.expects(:context_host).with(account2).returns('school1')
+      @student.pseudonyms.scoped.delete_all
+      account2.pseudonyms.create!(user: @student, unique_id: 'user') { |p| p.sis_user_id = 'sisid' }
+      @quiz.context.root_account.any_instantiation.stubs(:trust_exists?).returns(true)
+      @quiz.context.root_account.any_instantiation.stubs(:trusted_account_ids).returns([account2.id])
+
+      qs = @quiz.generate_submission(@student)
+      qs.grade_submission
+      stats = CSV.parse(csv(:include_all_versions => true))
+      stats[1][3].should == 'school1'
+    end
   end
 
   it "includes attachment display names for quiz file upload questions" do
@@ -302,4 +317,77 @@ describe Quizzes::QuizStatistics::StudentAnalysis do
     stats.last[9].should == "lolcats,lolrus"
   end
 
+  it 'should not count teacher preview submissions' do
+    teacher_in_course(:active_all => true)
+    q = @course.quizzes.create!
+    q.update_attribute(:published_at, Time.now)
+    q.quiz_questions.create!(:question_data => {:name => 'q1', :points_possible => 1, 'question_type' => 'multiple_choice_question', 'answers' => [{'answer_text' => '', 'answer_html' => '<em>zero</em>', 'answer_weight' => '100'}, {'answer_text' => "", 'answer_html' => "<p>one</p>", 'answer_weight' => '0'}]})
+    q.quiz_questions.create!(:question_data => {:name => 'q2', :points_possible => 1, 'question_type' => 'multiple_answers_question', 'answers' => [{'answer_text' => '', 'answer_html' => "<a href='http://example.com/caturday.gif'>lolcats</a>", 'answer_weight' => '100'}, {'answer_text' => 'lolrus', 'answer_weight' => '100'}]})
+    q.generate_quiz_data
+    q.save
+    qs = q.generate_submission(@teacher, true)
+    qs.submission_data = {
+        "question_#{q.quiz_data[0][:id]}" => "#{q.quiz_data[0][:answers][0][:id]}",
+        "question_#{q.quiz_data[1][:id]}_answer_#{q.quiz_data[1][:answers][0][:id]}" => "1",
+        "question_#{q.quiz_data[1][:id]}_answer_#{q.quiz_data[1][:answers][1][:id]}" => "1"
+    }
+    Quizzes::SubmissionGrader.new(qs).grade_submission
+
+    stats = q.statistics
+    stats[:unique_submission_count].should == 0
+  end
+
+  it 'should not count student view submissions' do
+    @course = course(active_all: true)
+    fake_student = @course.student_view_student
+    q = @course.quizzes.create!
+    q.update_attribute(:published_at, Time.now)
+    q.quiz_questions.create!(:question_data => {:name => 'q1', :points_possible => 1, 'question_type' => 'multiple_choice_question', 'answers' => [{'answer_text' => '', 'answer_html' => '<em>zero</em>', 'answer_weight' => '100'}, {'answer_text' => "", 'answer_html' => "<p>one</p>", 'answer_weight' => '0'}]})
+    q.quiz_questions.create!(:question_data => {:name => 'q2', :points_possible => 1, 'question_type' => 'multiple_answers_question', 'answers' => [{'answer_text' => '', 'answer_html' => "<a href='http://example.com/caturday.gif'>lolcats</a>", 'answer_weight' => '100'}, {'answer_text' => 'lolrus', 'answer_weight' => '100'}]})
+    q.generate_quiz_data
+    q.save
+    qs = q.generate_submission(fake_student)
+    qs.submission_data = {
+        "question_#{q.quiz_data[0][:id]}" => "#{q.quiz_data[0][:answers][0][:id]}",
+        "question_#{q.quiz_data[1][:id]}_answer_#{q.quiz_data[1][:answers][0][:id]}" => "1",
+        "question_#{q.quiz_data[1][:id]}_answer_#{q.quiz_data[1][:answers][1][:id]}" => "1"
+    }
+    Quizzes::SubmissionGrader.new(qs).grade_submission
+
+    stats = q.statistics
+    stats[:unique_submission_count].should == 0
+
+    puts "Stats: #{stats.to_json}"
+  end
+
+  describe 'question statistics' do
+    subject { Quizzes::QuizStatistics::StudentAnalysis.new({}) }
+
+    it 'should proxy to CanvasQuizStatistics for supported questions' do
+      question_data = { question_type: 'essay_question' }
+      responses = []
+
+      CanvasQuizStatistics.
+        expects(:analyze).
+          with(question_data, responses).
+          returns({ some_metric: 5 })
+
+      output = subject.send(:stats_for_question, question_data, responses, false)
+      output.should == {
+        question_type: 'essay_question',
+        some_metric: 5
+      }
+    end
+
+    it "shouldn't proxy if the legacy flag is on" do
+      question_data = {
+        question_type: 'essay_question',
+        answers: []
+      }
+
+      CanvasQuizStatistics.expects(:analyze).never
+
+      subject.send(:stats_for_question, question_data, [])
+    end
+  end
 end

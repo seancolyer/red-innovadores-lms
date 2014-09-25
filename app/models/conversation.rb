@@ -26,6 +26,11 @@ class Conversation < ActiveRecord::Base
   has_many :conversation_message_participants, :through => :conversation_messages
   has_one :stream_item, :as => :asset
   belongs_to :context, :polymorphic => true
+  validates_inclusion_of :context_type, :allow_nil => true, :in => ['Account', 'Course', 'Group']
+
+  EXPORTABLE_ATTRIBUTES = [:id, :has_attachments, :has_media_objects, :tags, :root_account_ids, :subject, :context_type, :context_id]
+  EXPORTABLE_ASSOCATIONS = [:context]
+
   validates_length_of :subject, :maximum => maximum_string_length, :allow_nil => true
 
   # see also MessageableUser
@@ -232,11 +237,7 @@ class Conversation < ActiveRecord::Base
       save! if new_tags.present? || root_account_ids_changed?
 
       # so we can take advantage of other preloaded associations
-      if CANVAS_RAILS2
-        ConversationMessage.send :add_preloaded_record_to_collection, [message], :conversation, self
-      else
-        message.association(:conversation).target = self
-      end
+      message.association(:conversation).target = self
       message.save_without_broadcasting!
 
       add_message_to_participants(message, options.merge(
@@ -415,25 +416,40 @@ class Conversation < ActiveRecord::Base
   def update_participants(message, options = {})
     updated = false
     self.conversation_participants.with_each_shard do |conversation_participants|
+      conversation_participants = conversation_participants.where(:user_id =>
+        (options[:only_users]).map(&:id)) if options[:only_users]
+
       skip_ids = options[:skip_users].try(:map, &:id) || [message.author_id]
-      skip_ids = [0] if skip_ids.empty?
       update_for_skips = options[:update_for_skips] != false
 
       # make sure this jumps to the top of the inbox and is marked as unread for anyone who's subscribed
-      cp_conditions = sanitize_sql([
-        "cp.conversation_id = ? AND cp.workflow_state <> 'unread' AND (cp.last_message_at IS NULL OR cp.subscribed) AND cp.user_id NOT IN (?)",
+      sql = "cp.conversation_id = ? AND cp.workflow_state <> 'unread' AND (cp.last_message_at IS NULL OR cp.subscribed)"
+      params = [
         self.id,
-        skip_ids
-      ])
+      ]
+      if skip_ids.present?
+        sql += " AND cp.user_id NOT IN (?)"
+        params << skip_ids
+      end
+      if options[:only_users]
+        sql += " AND cp.user_id IN (?)"
+        params << (options[:only_users]).map(&:id)
+      end
+      cp_conditions = sanitize_sql(params.unshift(sql))
+
       if %w{MySQL Mysql2}.include?(connection.adapter_name)
         connection.execute <<-SQL
           UPDATE users, conversation_participants cp
-          SET unread_conversations_count = unread_conversations_count + 1
+          SET unread_conversations_count = unread_conversations_count + 1,
+            #{sanitize_sql_for_assignment(updated_at: Time.now.utc)}
           WHERE users.id = cp.user_id AND #{cp_conditions}
         SQL
       else
-        User.where("id IN (SELECT user_id FROM conversation_participants cp WHERE #{cp_conditions})").
-            update_all('unread_conversations_count = unread_conversations_count + 1')
+        lock_type = true
+        lock_type = 'FOR NO KEY UPDATE' if User.connection.adapter_name == 'PostgreSQL' && User.connection.send(:postgresql_version) >= 90300
+        # lock the rows in a predefined order to prevent deadlocks
+        ids = User.where(id: ConversationParticipant.from("conversation_participants cp").where(cp_conditions).select(:user_id)).lock(lock_type).order(:id).pluck(:id)
+        User.where(id: ids).update_all(["unread_conversations_count = unread_conversations_count + 1, updated_at = ?", Time.now.utc])
       end
 
       conversation_participants.where("(last_message_at IS NULL OR subscribed) AND user_id NOT IN (?)", skip_ids).
@@ -473,12 +489,14 @@ class Conversation < ActiveRecord::Base
   def reply_from(opts)
     user = opts.delete(:user)
     message = opts.delete(:text).to_s.strip
-    user = nil unless user && self.conversation_participants.find_by_user_id(user.id)
+    participant = self.conversation_participants.find_by_user_id(user.id)
+    user = nil unless user && participant
     if !user
       raise "Only message participants may reply to messages"
     elsif message.blank?
       raise "Message body cannot be blank"
     else
+      participant.update_attribute(:workflow_state, 'read') if participant.workflow_state == 'unread'
       add_message(user, message, opts)
     end
   end
@@ -597,13 +615,7 @@ class Conversation < ActiveRecord::Base
           ConversationMessageParticipant.joins(:conversation_message).
               where(:conversation_messages => { :conversation_id => self.id }).
               delete_all
-          if CANVAS_RAILS2
-            # bare scoped call avoids HasManyAssociation's delete_all, which loads
-            # all records in Rails 2
-            self.conversation_messages.scoped.delete_all
-          else
-            self.conversation_messages.delete_all
-          end
+          self.conversation_messages.delete_all
         end
       end
 
@@ -702,11 +714,7 @@ class Conversation < ActiveRecord::Base
   protected
 
   def maybe_update_timestamp(col, val, additional_conditions=[])
-    if CANVAS_RAILS2
-      condition = self.class.merge_conditions(["(#{col} IS NULL OR #{col} < ?)", val], additional_conditions)
-    else
-      condition = self.class.where(["(#{col} IS NULL OR #{col} < ?)", val]).where(additional_conditions).where_values.join(' AND ')
-    end
+    condition = self.class.where(["(#{col} IS NULL OR #{col} < ?)", val]).where(additional_conditions).where_values.join(' AND ')
     sanitize_sql ["#{col} = CASE WHEN #{condition} THEN ? ELSE #{col} END", val]
   end
 end

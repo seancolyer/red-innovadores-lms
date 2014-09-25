@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 - 2013 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -139,7 +139,7 @@ class ConversationsController < ApplicationController
   #   "course_456". Can be an array (by setting "filter[]") or single value
   #   (by setting "filter")
   #
-  # @argument filter_mode [optional, "and"|"or", default "or"]
+  # @argument filter_mode [Optional, "and"|"or", default "or"]
   #   When filter[] contains multiple filters, combine them with this mode,
   #   filtering conversations that at have at least all of the contexts ("and")
   #   or at least one of the contexts ("or")
@@ -228,16 +228,27 @@ class ConversationsController < ApplicationController
       render :json => @conversations_json
     else
       return redirect_to conversations_path(:scope => params[:redirect_scope]) if params[:redirect_scope]
-      load_all_contexts :permissions => [:manage_user_notes]
-      notes_enabled = @current_user.associated_accounts.any?{|a| a.enable_user_notes }
-      can_add_notes_for_account = notes_enabled && @current_user.associated_accounts.any?{|a| a.grants_right?(@current_user, nil, :manage_students) }
-      js_env(:CONVERSATIONS => {
-               :ATTACHMENTS_FOLDER_ID => @current_user.conversation_attachments_folder.id,
-               :ACCOUNT_CONTEXT_CODE => "account_#{@domain_root_account.id}",
-               :CONTEXTS => @contexts,
-               :NOTES_ENABLED => notes_enabled,
-               :CAN_ADD_NOTES_FOR_ACCOUNT => can_add_notes_for_account,
-             })
+      @current_user.reset_unread_conversations_counter
+      @current_user.reload
+
+      hash = {
+        :ATTACHMENTS_FOLDER_ID => @current_user.conversation_attachments_folder.id,
+        :ACCOUNT_CONTEXT_CODE => "account_#{@domain_root_account.id}",
+      }
+
+      notes_enabled_accounts = @current_user.associated_accounts.where(enable_user_notes: true)
+
+      hash[:NOTES_ENABLED] = notes_enabled_accounts.any?
+      hash[:CAN_ADD_NOTES_FOR_ACCOUNT] = notes_enabled_accounts.any? {|a| a.grants_right?(@current_user, :manage_students) }
+
+      if hash[:NOTES_ENABLED] && !hash[:CAN_ADD_NOTES_FOR_ACCOUNT]
+        course_note_permissions = {}
+        @current_user.enrollments.active.of_instructor_type.includes(:course).each do |enrollment|
+          course_note_permissions[enrollment.course_id] = true if enrollment.has_permission_to?(:manage_user_notes)
+        end
+        hash[:CAN_ADD_NOTES_FOR_COURSES] = course_note_permissions
+      end
+      js_env(CONVERSATIONS: hash)
       return render :template => 'conversations/index_new'
     end
   end
@@ -252,7 +263,7 @@ class ConversationsController < ApplicationController
   # reused.
   #
   # @argument recipients[] [String]
-  #   An array of recipient ids. These may beuser ids or course/group ids
+  #   An array of recipient ids. These may be user ids or course/group ids
   #   prefixed with "course_" or "group_" respectively, e.g.
   #   recipients[]=1&recipients[]=2&recipients[]=course_3
   #
@@ -279,6 +290,11 @@ class ConversationsController < ApplicationController
   # @argument media_comment_type [String, "audio"|"video"]
   #   Type of the associated media file
   #
+  # @argument user_note [Optional, Boolean]
+  #   Will add a faculty journal entry for each recipient as long as the user
+  #   making the api call has permission, the recipient is a student and
+  #   faculty journals are enabled in the account.
+  #
   # @argument mode [String, "sync"|"async"]
   #   Determines whether the messages will be created/sent synchronously or
   #   asynchronously. Defaults to sync, and this option is ignored if this is a
@@ -292,7 +308,7 @@ class ConversationsController < ApplicationController
   # @argument filter[] [Optional, String, course_id|group_id|user_id]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
-  # @argument filter_mode [optional, "and"|"or", default "or"]
+  # @argument filter_mode [Optional, "and"|"or", default "or"]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
   #
@@ -336,7 +352,7 @@ class ConversationsController < ApplicationController
       visibility_map = infer_visibility(conversations)
       render :json => conversations.map{ |c| conversation_json(c, @current_user, session, :include_participant_avatars => false, :include_participant_contexts => false, :visible => visibility_map[c.conversation_id]) }, :status => :created
     else
-      @conversation = @current_user.initiate_conversation(@recipients, !value_to_boolean(params[:group_conversation]), :subject => params[:subject], :context_type => context_type, :context_id => context_id)
+      @conversation = @current_user.initiate_conversation(@recipients, !group_conversation, :subject => params[:subject], :context_type => context_type, :context_id => context_id)
       @conversation.add_message(message, :tags => @tags, :update_for_sender => false)
       render :json => [conversation_json(@conversation.reload, @current_user, session, :include_indirect_participants => true, :messages => [message])], :status => :created
     end
@@ -391,7 +407,7 @@ class ConversationsController < ApplicationController
   # @argument filter[] [Optional, String, course_id|group_id|user_id]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
-  # @argument filter_mode [optional, "and"|"or", default "or"]
+  # @argument filter_mode [Optional, "and"|"or", default "or"]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
   #
@@ -488,9 +504,11 @@ class ConversationsController < ApplicationController
       messages = @conversation.messages
       ConversationMessage.send(:preload_associations, messages, :asset)
     end
+
     render :json => conversation_json(@conversation,
                                       @current_user,
                                       session,
+                                      include_participant_contexts: value_to_boolean(params.fetch(:include_participant_contexts, true)),
                                       include_indirect_participants: true,
                                       messages: messages,
                                       submissions: [],
@@ -522,7 +540,7 @@ class ConversationsController < ApplicationController
   # @argument filter[] [Optional, String, course_id|group_id|user_id]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
-  # @argument filter_mode [optional, "and"|"or", default "or"]
+  # @argument filter_mode [Optional, "and"|"or", default "or"]
   #   Used when generating "visible" in the API response. See the explanation
   #   under the {api:ConversationsController#index index API action}
   #
@@ -584,8 +602,8 @@ class ConversationsController < ApplicationController
 
   # internal api
   # @example_request
-  #     curl https://<canvas>/api/v1/conversations/:id/delete_for_all \ 
-  #       -X DELETE \ 
+  #     curl https://<canvas>/api/v1/conversations/:id/delete_for_all \
+  #       -X DELETE \
   #       -H 'Authorization: Bearer <token>'
   def delete_for_all
     return unless authorized_action(Account.site_admin, @current_user, :become_user)
@@ -673,6 +691,11 @@ class ConversationsController < ApplicationController
   # An array of message ids from this conversation to send to recipients
   # of the new message. Recipients who already had a copy of included
   # messages will not be affected.
+  #
+  # @argument user_note [Optional, Boolean]
+  #   Will add a faculty journal entry for each recipient as long as the user
+  #   making the api call has permission, the recipient is a student and
+  #   faculty journals are enabled in the account.
   #
   # @example_response
   #   {
@@ -783,11 +806,11 @@ class ConversationsController < ApplicationController
   #   The action to take on each conversation.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/conversations \ 
-  #       -X PUT \ 
-  #       -H 'Authorization: Bearer <token>' \ 
-  #       -d 'event=mark_as_read' \ 
-  #       -d 'conversation_ids[]=1' \ 
+  #     curl https://<canvas>/api/v1/conversations \
+  #       -X PUT \
+  #       -H 'Authorization: Bearer <token>' \
+  #       -d 'event=mark_as_read' \
+  #       -d 'conversation_ids[]=1' \
   #       -d 'conversation_ids[]=2'
   #
   # @returns Progress
@@ -821,7 +844,7 @@ class ConversationsController < ApplicationController
     # but for backwards API compatibility we need to leave it a string.
     render :json => {'unread_count' => @current_user.unread_conversations_count.to_s}
   end
-  
+
   def public_feed
     return unless get_feed_context(:only => [:user])
     @current_user = @context
@@ -924,7 +947,7 @@ class ConversationsController < ApplicationController
   end
 
   def infer_visibility(conversations)
-    multiple = conversations.is_a?(Enumerable) || (!CANVAS_RAILS2 && conversations.is_a?(ActiveRecord::Relation))
+    multiple = conversations.is_a?(Enumerable) || conversations.is_a?(ActiveRecord::Relation)
     conversations = [conversations] unless multiple
     result = Hash.new(false)
     visible_conversations = @current_user.shard.activate do
@@ -1002,7 +1025,11 @@ class ConversationsController < ApplicationController
   end
 
   def include_private_conversation_enrollments
-    value_to_boolean(params[:include_private_conversation_enrollments]) || api_request?
+    if params.has_key? :include_private_conversation_enrollments
+      value_to_boolean(params[:include_private_conversation_enrollments])
+    else
+      api_request?
+    end
   end
 
   # TODO API v2: default to false, like we do in the UI

@@ -39,7 +39,7 @@ describe Quizzes::QuizzesApiController, type: :request do
   end
 
   describe "GET /courses/:course_id/quizzes (index)" do
-    before { teacher_in_course(:active_all => true) }
+    before(:once) { teacher_in_course(:active_all => true) }
 
     it "should return list of quizzes" do
       quizzes = (0..3).map{ |i| @course.quizzes.create! :title => "quiz_#{i}" }
@@ -73,6 +73,19 @@ describe Quizzes::QuizzesApiController, type: :request do
                    :format => "json",
                    :course_id => "#{@course.id}")
       assert_status(404)
+    end
+    it "limits student requests to published quizzes" do
+      student_in_course(:active_all => true)
+      quizzes = (0..1).map { |i| @course.quizzes.create! :title => "quiz_#{i}"}
+      published_quiz = quizzes.first
+      published_quiz.publish!
+      json = api_call(:get, "/api/v1/courses/#{@course.id}/quizzes",
+                      :controller => 'quizzes/quizzes_api',
+                      :action => 'index',
+                      :format => 'json',
+                      :course_id => "#{@course.id}")
+      quiz_ids = json.collect { |quiz| quiz['id'] }
+      quiz_ids.should == [ published_quiz.id]
     end
 
     context "jsonapi style" do
@@ -113,7 +126,7 @@ describe Quizzes::QuizzesApiController, type: :request do
   end
 
   describe "GET /courses/:course_id/quizzes/:id (show)" do
-    before { course_with_teacher_logged_in(:active_all => true, :course => @course) }
+    before(:once) { course_with_teacher(:active_all => true, :course => @course) }
 
     context "unpublished quiz" do
       before do
@@ -165,7 +178,7 @@ describe Quizzes::QuizzesApiController, type: :request do
               {:quiz => quiz_params}, {}, opts)
     end
 
-    before { teacher_in_course(:active_all => true) }
+    before(:once) { teacher_in_course(:active_all => true) }
 
     let (:new_quiz) { @course.quizzes.first }
 
@@ -209,9 +222,9 @@ describe Quizzes::QuizzesApiController, type: :request do
 
     describe "validations" do
       context "assignment_group_id" do
-        let!(:my_group) { @course.assignment_groups.create! :name => 'my group' }
-        let (:other_course) { Course.create! :name => 'other course' }
-        let!(:other_group) { other_course.groups.create! :name => 'other group' }
+        let_once(:my_group) { @course.assignment_groups.create! :name => 'my group' }
+        let_once(:other_course) { Course.create! :name => 'other course' }
+        let_once(:other_group) { other_course.groups.create! :name => 'other group' }
 
         it "should put the quiz in a group owned by its course" do
           api_create_quiz({'title' => 'test quiz', 'assignment_group_id' => my_group.id})
@@ -331,15 +344,11 @@ describe Quizzes::QuizzesApiController, type: :request do
 
       it "renders in a jsonapi style" do
         @quiz = @course.quizzes.create! title: 'Test Quiz'
-        @json = api_call(:put, "/api/v1/courses/#{@course.id}/quizzes/#{@quiz.id}",
+        @json = raw_api_call(:put, "/api/v1/courses/#{@course.id}/quizzes/#{@quiz.id}",
                          { :controller=>"quizzes/quizzes_api", :action=>"update", :format=>"json", :course_id=>"#{@course.id}", :id => "#{@quiz.id}"},
                          { quizzes: [{ 'id' => @quiz.id, 'title' => 'blah blah' }] },
                         'Accept' => 'application/vnd.api+json')
-        @json = @json.fetch('quizzes').map { |q| q.with_indifferent_access }
-        @json.should =~ [
-          Quizzes::QuizSerializer.new(@quiz.reload, scope: @user, controller: controller, session: session).
-          as_json[:quiz].with_indifferent_access
-        ]
+        response.should be_success
       end
     end
 
@@ -356,7 +365,7 @@ describe Quizzes::QuizzesApiController, type: :request do
     end
 
     context 'lockdown_browser' do
-      before do
+      before :once do
         # require_lockdown_browser, require_lockdown_browser_for_results and
         # require_lockdown_browser_monitor will only return true if the plugin is enabled,
         # so register and enable it for these test
@@ -401,15 +410,29 @@ describe Quizzes::QuizzesApiController, type: :request do
         @quiz.reload.should be_published
         api_update_quiz({},{published: nil}) # nil shouldn't change published
         @quiz.reload.should be_published
+
         @quiz.any_instantiation.stubs(:has_student_submissions?).returns true
         json = api_update_quiz({},{}) # nil shouldn't change published
         json['unpublishable'].should == false
+
         json = api_update_quiz({}, {published: false}, {expected_status: 400})
         json['errors']['published'].should_not be_nil
+
         ActiveRecord::Base.reset_any_instantiation!
         @quiz.reload.should be_published
       end
 
+      it "should not lose quiz question count when publishing with draft state" do
+        Account.default.enable_feature!(:draft_state)
+
+        @quiz ||= @course.quizzes.create!(:title => 'title')
+        @qq1 = @quiz.quiz_questions.create!(
+          question_data: multiple_choice_question_data
+        )
+        json = api_update_quiz({}, {published: true})
+        @quiz.reload.should be_published
+        @quiz.question_count.should == 1
+      end
     end
 
     describe "validations" do
@@ -488,7 +511,7 @@ describe Quizzes::QuizzesApiController, type: :request do
   end
 
   describe "POST /courses/:course_id/quizzes/:id/reorder (reorder)" do
-    before do
+    before :once do
       teacher_in_course(:active_all => true)
       @quiz  = @course.quizzes.create! :title => 'title'
       @question1 = @quiz.quiz_questions.create!(:question_data => {'name' => 'test question 1', 'answers' => [{'id' => 1}, {'id' => 2}], :position => 1})

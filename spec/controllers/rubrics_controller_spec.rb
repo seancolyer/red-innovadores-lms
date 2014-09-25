@@ -186,7 +186,6 @@ describe RubricsController do
       @rubric.save
       @rubric_association.context = @course2
       @rubric_association.save
-      rescue_action_in_public! if CANVAS_RAILS2
       put 'update', :course_id => @course.id, :id => @rubric.id, :rubric => {:title => "new title"}, :rubric_association_id => @rubric_association.id
       assigns[:rubric].should_not be_nil
       assigns[:rubric].should_not eql(@rubric)
@@ -477,8 +476,8 @@ describe RubricsController do
     end
     it "should delete the rubric if the rubric is only associated with a course" do
       course_with_teacher_logged_in :active_all => true
-      Account.site_admin.add_user(@user, 'AccountAdmin')
-      Account.default.add_user(@user, 'AccountAdmin')
+      Account.site_admin.account_users.create!(user: @user)
+      Account.default.account_users.create!(user: @user)
 
       @rubric = Rubric.create!(:user => @user, :context => @course)
       RubricAssociation.create!(:rubric => @rubric, :context => @course, :purpose => :bookmark, :association_object => @course)
@@ -492,8 +491,8 @@ describe RubricsController do
     end
     it "should delete the rubric association even if the rubric doesn't belong to a course" do
       course_with_teacher_logged_in :active_all => true
-      Account.site_admin.add_user(@user, 'AccountAdmin')
-      Account.default.add_user(@user, 'AccountAdmin')
+      Account.site_admin.account_users.create!(user: @user)
+      Account.default.account_users.create!(user: @user)
       @user.reload
 
       @rubric = Rubric.create!(:user => @user, :context => Account.default)

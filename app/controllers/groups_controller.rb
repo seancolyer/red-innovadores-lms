@@ -139,7 +139,7 @@ class GroupsController < ApplicationController
   include Api::V1::Group
   include Api::V1::GroupCategory
 
-  SETTABLE_GROUP_ATTRIBUTES = %w(name description join_level is_public group_category avatar_attachment storage_quota_mb)
+  SETTABLE_GROUP_ATTRIBUTES = %w(name description join_level is_public group_category avatar_attachment storage_quota_mb max_membership leader)
 
   include TextHelper
 
@@ -161,14 +161,8 @@ class GroupsController < ApplicationController
       groups = []
     end
 
-    if CANVAS_RAILS2
-      scope = @context.users_not_in_groups(groups, order: User.sortable_name_order_by_clause('users'))
-      total_entries = scope.count('users.id', distinct: true)
-      users = scope.paginate(page: page, per_page: per_page, total_entries: total_entries)
-    else
-      users = @context.users_not_in_groups(groups, order: User.sortable_name_order_by_clause('users')).
-        paginate(page: page, per_page: per_page)
-    end
+    users = @context.users_not_in_groups(groups, order: User.sortable_name_order_by_clause('users')).
+      paginate(page: page, per_page: per_page)
 
     if authorized_action(@context, @current_user, :manage)
       json = {
@@ -192,7 +186,7 @@ class GroupsController < ApplicationController
   #  Only include groups that are in this type of context.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/users/self/groups?context_type=Account \ 
+  #     curl https://<canvas>/api/v1/users/self/groups?context_type=Account \
   #          -H 'Authorization: Bearer <token>'
   #
   # @returns [Group]
@@ -225,7 +219,7 @@ class GroupsController < ApplicationController
   # Returns the list of active groups in the given context that are visible to user.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/courses/1/groups \ 
+  #     curl https://<canvas>/api/v1/courses/1/groups \
   #          -H 'Authorization: Bearer <token>'
   #
   # @returns [Group]
@@ -288,8 +282,8 @@ class GroupsController < ApplicationController
 
       format.json do
         path = send("api_v1_#{@context.class.to_s.downcase}_user_groups_url")
-        paginated_groups = Api.paginate(@groups, self, path)
-        render :json => paginated_groups.map { |g| group_json(g, @current_user, session) }
+        paginated_groups = Api.paginate(all_groups, self, path)
+        render :json => paginated_groups.map { |g| group_json(g, @current_user, session, :include => Array(params[:include])) }
       end
     end
   end
@@ -300,7 +294,7 @@ class GroupsController < ApplicationController
   # the rights to see it.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/groups/<group_id> \ 
+  #     curl https://<canvas>/api/v1/groups/<group_id> \
   #          -H 'Authorization: Bearer <token>'
   #
   # @argument include[] [String, "permissions"]
@@ -392,11 +386,11 @@ class GroupsController < ApplicationController
   #   ignored if the caller does not have the manage_storage_quotas permission.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/groups \ 
-  #          -F 'name=Math Teachers' \ 
-  #          -F 'description=A place to gather resources for our classes.' \ 
-  #          -F 'is_public=true' \ 
-  #          -F 'join_level=parent_context_auto_join' \ 
+  #     curl https://<canvas>/api/v1/groups \
+  #          -F 'name=Math Teachers' \
+  #          -F 'description=A place to gather resources for our classes.' \
+  #          -F 'is_public=true' \
+  #          -F 'join_level=parent_context_auto_join' \
   #          -H 'Authorization: Bearer <token>'
   #
   # @returns Group
@@ -434,7 +428,7 @@ class GroupsController < ApplicationController
           @group.invitees = params[:invitees]
           flash[:notice] = t('notices.create_success', 'Group was successfully created.')
           format.html { redirect_to group_url(@group) }
-          format.json { render :json => group_json(@group, @current_user, session) }
+          format.json { render :json => group_json(@group, @current_user, session, {include: ['users']}) }
         else
           format.html { render :action => "new" }
           format.json { render :json => @group.errors, :status => :bad_request }
@@ -472,10 +466,10 @@ class GroupsController < ApplicationController
   #   ignored if the caller does not have the manage_storage_quotas permission.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/groups/<group_id> \ 
-  #          -X PUT \ 
-  #          -F 'name=Algebra Teachers' \ 
-  #          -F 'join_level=parent_context_request' \ 
+  #     curl https://<canvas>/api/v1/groups/<group_id> \
+  #          -X PUT \
+  #          -F 'name=Algebra Teachers' \
+  #          -F 'join_level=parent_context_request' \
   #          -H 'Authorization: Bearer <token>'
   #
   # @returns Group
@@ -494,9 +488,16 @@ class GroupsController < ApplicationController
       attrs[:avatar_attachment] = @group.active_images.find_by_id(avatar_id)
     end
 
+    if attrs[:leader]
+      membership = @group.group_memberships.find_by_user_id(attrs[:leader][:id])
+      return render :json => {}, :status => :bad_request unless membership
+      attrs[:leader] = membership.user
+    end
+
     if authorized_action(@group, @current_user, :update)
       respond_to do |format|
         if @group.update_attributes(attrs.slice(*SETTABLE_GROUP_ATTRIBUTES))
+          @group.users.update_all(updated_at: Time.now.utc)
           flash[:notice] = t('notices.update_success', 'Group was successfully updated.')
           format.html { redirect_to clean_return_to(params[:return_to]) || group_url(@group) }
           format.json { render :json => group_json(@group, @current_user, session) }
@@ -513,8 +514,8 @@ class GroupsController < ApplicationController
   # Deletes a group and removes all members.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/groups/<group_id> \ 
-  #          -X DELETE \ 
+  #     curl https://<canvas>/api/v1/groups/<group_id> \
+  #          -X DELETE \
   #          -H 'Authorization: Bearer <token>'
   #
   # @returns Group
@@ -547,8 +548,8 @@ class GroupsController < ApplicationController
   #   An array of email addresses to be sent invitations.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/groups/<group_id>/invite \ 
-  #          -F 'invitees[]=leonard@example.com&invitees[]=sheldon@example.com' \ 
+  #     curl https://<canvas>/api/v1/groups/<group_id>/invite \
+  #          -F 'invitees[]=leonard@example.com&invitees[]=sheldon@example.com' \
   #          -H 'Authorization: Bearer <token>'
   def invite
     find_group
@@ -612,6 +613,9 @@ class GroupsController < ApplicationController
   #   The partial name or full ID of the users to match and return in the
   #   results list. Must be at least 3 characters.
   #
+  # @argument include[] [String, "avatar_url"]
+  #   - "avatar_url": Include users' avatar_urls.
+  #
   # @example_request
   #     curl https://<canvas>/api/v1/groups/1/users \
   #          -H 'Authorization: Bearer <token>'
@@ -629,7 +633,7 @@ class GroupsController < ApplicationController
     end
 
     users = Api.paginate(users, self, api_v1_group_users_url)
-    render :json => users.map { |u| user_json(u, @current_user, session) }
+    render :json => users_json(users, @current_user, session, Array(params[:include]))
   end
 
   def edit

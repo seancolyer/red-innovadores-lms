@@ -73,7 +73,7 @@ describe "external tools" do
       fj('button.btn-primary[role="button"]').click
       wait_for_ajaximations
 
-      ff('td.external_tool').size.should > 0
+      ff('th.external_tool').size.should > 0
       fj('.view_app_center_link').click
       wait_for_ajaximations
 
@@ -686,6 +686,125 @@ describe "external tools" do
       end
     end
 
+  end
+
+  describe 'showing external tools' do
+    before do
+      course_with_teacher_logged_in(active_all: true)
+      @tool = @course.context_external_tools.create!(
+        name: "new tool",
+        consumer_key: "key",
+        shared_secret: "secret",
+        url: "http://#{HostUrl.default_host}/selection_test",
+      )
+
+    end
+
+    it "assumes course navigation launch type" do
+      @tool.course_navigation = {}
+      @tool.save!
+      get "/courses/#{@course.id}/external_tools/#{@tool.id}"
+      in_frame('tool_content') do
+        keep_trying_until { ff("#basic_lti_link").size.should > 0 }
+      end
+    end
+
+    it "accepts an explicit launch type" do
+      @tool.migration_selection = {}
+      @tool.save!
+      get "/courses/#{@course.id}/external_tools/#{@tool.id}?launch_type=migration_selection"
+      in_frame('tool_content') do
+        keep_trying_until { ff("#basic_lti_link").size.should > 0 }
+      end
+    end
+
+    it "validates the launch type" do
+      @tool.course_navigation = {}
+      @tool.save!
+      get "/courses/#{@course.id}/external_tools/#{@tool.id}?launch_type=bad_type"
+      assert_flash_error_message(/couldn't find valid settings/i)
+    end
+
+    describe "display type" do
+      before do
+        @tool.course_navigation = {}
+        @tool.save!
+      end
+
+      it "defaults to normal display type" do
+        get "/courses/#{@course.id}/external_tools/#{@tool.id}"
+        f('#footer').should be_displayed
+        f('#left-side').should_not be_nil
+        f('#breadcrumbs').should_not be_nil
+        f('body').attribute('class').should_not include('full-width')
+      end
+
+      it "shows full width if top level property specified" do
+        @tool.settings[:display_type] = "full_width"
+        @tool.save!
+        get "/courses/#{@course.id}/external_tools/#{@tool.id}"
+        f('#footer').should_not be_displayed
+        f('#left-side').should be_nil
+        f('#breadcrumbs').should be_nil
+        f('body').attribute('class').should include('full-width')
+      end
+
+      it "shows full width if extension property specified" do
+        @tool.course_navigation[:display_type] = "full_width"
+        @tool.save!
+        get "/courses/#{@course.id}/external_tools/#{@tool.id}"
+        f('#footer').should_not be_displayed
+        f('#left-side').should be_nil
+        f('#breadcrumbs').should be_nil
+        f('body').attribute('class').should include('full-width')
+      end
+    end
+
+  end
+
+  describe 'content migration launch through full-width redirect' do
+    before do
+      course_with_teacher_logged_in(active_all: true)
+      @course.root_account.enable_feature!(:lor_for_account)
+      @tool = @course.context_external_tools.create!(
+          name: "new tool",
+          consumer_key: "key",
+          shared_secret: "secret",
+          url: "http://#{HostUrl.default_host}/selection_test",
+      )
+      @tool.course_home_sub_navigation = {
+          url: "http://#{HostUrl.default_host}/selection_test",
+          text: "tool text",
+          icon_url: "/images/add.png",
+          display_type: 'full_width'
+      }
+      @tool.save!
+    end
+
+    it "should queue a content migration with content returned from the external tool" do
+      get "/courses/#{@course.id}"
+      tool_link = f('a.course-home-sub-navigation-lti')
+      expect_new_page_load { tool_link.click }
+      wait_for_ajaximations
+
+      expect_new_page_load do
+        in_frame('tool_content') do
+          keep_trying_until { ff("#file_link").length > 0 }
+          f("#file_link").click
+        end
+      end
+
+      # should redirect to the content_migration page on success
+      driver.current_url.should match %r{/courses/\d+/content_migrations+}
+      @course.content_migrations.count.should == 1
+    end
+
+    it "should not show the link if the LOR feature flag is not enabled" do
+      @course.root_account.disable_feature!(:lor_for_account)
+      get "/courses/#{@course.id}"
+      tool_link = f('a.course-home-sub-navigation-lti')
+      tool_link.should be_nil
+    end
   end
 
   private

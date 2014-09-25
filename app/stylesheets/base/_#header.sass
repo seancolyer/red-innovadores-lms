@@ -71,7 +71,8 @@
   float: right
   font-size: 12px
   margin-right: $right_side_margin
-  margin-bottom: 4px /*make room for the drop shadow*/
+  /*make room for the drop shadow*/
+  margin-bottom: 4px
   padding: 0 11px
   @if $use_high_contrast
     background-color: #555
@@ -147,7 +148,8 @@
       background-color: $menu-background-color
 
     .menu-item-drop
-      left: 0 // bring it back on screen so you can see it
+      // bring it back on screen so you can see it
+      left: 0
 
   .menu-item-drop
     border: 1px solid $menu-border-color
@@ -163,7 +165,7 @@
 
     .menu-item-view-all
       border-bottom: none
-      font-size: 11px
+      font-size: 12px
       text-align: right
       white-space: nowrap
       &:hover
@@ -256,8 +258,8 @@
     bottom: 10px
     width: 270px
     box-shadow: 2px 2px 4px rgba(0,0,0, 0.2)
-    +transition(all 200ms ease)
-    +transform(scale(0.5))
+    transition: all 200ms ease
+    transform: scale(0.5)
 
     .customListRestore
       float: left
@@ -304,7 +306,7 @@
   min-height: 300px
 
 #menu_enrollments.customListEditing .customListWrapper
-  +transform(scale(1))
+  transform: scale(1)
   left: 270px
   opacity: 1
 

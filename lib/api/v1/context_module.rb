@@ -105,17 +105,20 @@ module Api::V1::ContextModule
       when 'ContextExternalTool'
         if content_tag.content && content_tag.content.tool_id
           api_url = sessionless_launch_url(context_module.context, :id => content_tag.content.id, :url => content_tag.content.url)
-        else
+        elsif content_tag.content
           api_url = sessionless_launch_url(context_module.context, :url => content_tag.content.url)
+        else
+          api_url = sessionless_launch_url(context_module.context, :url => content_tag.url)
         end
     end
     hash['url'] = api_url if api_url
 
-    # add external_url, if applicable
-    hash['external_url'] = content_tag.url if ['ExternalUrl', 'ContextExternalTool'].include?(content_tag.content_type)
-
-    # add new_tab, if applicable
-    hash['new_tab'] = content_tag.new_tab if content_tag.content_type == 'ContextExternalTool'
+    if ['ExternalUrl', 'ContextExternalTool'].include?(content_tag.content_type)
+      # add external_url, if applicable
+      hash['external_url'] = content_tag.url
+      # add new_tab, if applicable
+      hash['new_tab'] = content_tag.new_tab
+    end
 
     # add completion requirements
     if criterion = context_module.completion_requirements && context_module.completion_requirements.detect { |r| r[:id] == content_tag.id }

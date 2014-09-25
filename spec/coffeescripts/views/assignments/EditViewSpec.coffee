@@ -90,12 +90,12 @@ define [
 
     #fragile spec on Firefox, Safari
     #adds student group
-    # view.$('#assignment_has_group_category').click()
+    # view.$('#has_group_category').click()
     # view.$('#assignment_group_category_id option:eq(0)').attr("selected", "selected")
     # equal view.getFormData()['group_category_id'], "1"
 
     #removes student group
-    view.$('#assignment_has_group_category').click()
+    view.$('#has_group_category').click()
     equal view.getFormData()['groupCategoryId'], null
 
   test 'renders escaped angle brackets properly', ->
@@ -114,20 +114,20 @@ define [
   test 'lock down group category after students submit', ->
     view = editView has_submitted_submissions: true
     ok view.$(".group_category_locked_explanation").length
-    ok view.$("#assignment_has_group_category").prop("disabled")
+    ok view.$("#has_group_category").prop("disabled")
     ok view.$("#assignment_group_category_id").prop("disabled")
     ok !view.$("[type=checkbox][name=grade_group_students_individually]").prop("disabled")
 
     view = editView has_submitted_submissions: false
     equal view.$(".group_category_locked_explanation").length, 0
-    ok !view.$("#assignment_has_group_category").prop("disabled")
+    ok !view.$("#has_group_category").prop("disabled")
     ok !view.$("#assignment_group_category_id").prop("disabled")
     ok !view.$("[type=checkbox][name=grade_group_students_individually]").prop("disabled")
 
   module 'EditView: setDefaultsIfNew',
     setup: ->
       fakeENV.setup()
-      sinon.stub(userSettings, 'contextGet').returns {submission_types: "foo", peer_reviews: "1"}
+      sinon.stub(userSettings, 'contextGet').returns {submission_types: "foo", peer_reviews: "1", assignment_group_id: 99}
     teardown: ->
       userSettings.contextGet.restore()
       fakeENV.teardown()
@@ -143,6 +143,20 @@ define [
     view.setDefaultsIfNew()
 
     equal view.assignment.get('peer_reviews'), 1
+
+  test 'doesnt overwrite existing assignment settings', ->
+    view = editView()
+    view.assignment.set('assignment_group_id', 22)
+    view.setDefaultsIfNew()
+
+    equal view.assignment.get('assignment_group_id'), 22
+
+  test 'will overwrite empty arrays', ->
+    view = editView()
+    view.assignment.set('submission_types', [])
+    view.setDefaultsIfNew()
+
+    equal view.assignment.get('submission_types'), "foo"
 
   module 'EditView: setDefaultsIfNew: no localStorage',
     setup: ->

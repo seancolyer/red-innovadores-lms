@@ -13,7 +13,7 @@ module Delayed
       def self.included(base)
         base.extend ClassMethods
         base.default_priority = Delayed::NORMAL_PRIORITY
-        base.before_save :initialize_defaults unless CANVAS_RAILS2
+        base.before_save :initialize_defaults
       end
 
       attr_writer :current_shard
@@ -44,6 +44,7 @@ module Delayed
           options[:queue] = Delayed::Worker.queue unless options.key?(:queue)
           options[:max_attempts] ||= Delayed::Worker.max_attempts
           options[:current_shard] = Shard.current
+          options[:source] = Marginalia::Comment.construct_comment if defined?(Marginalia) && Marginalia::Comment.components
 
           # If two parameters are given to n_strand, the first param is used
           # as the strand name for looking up the Setting, while the second
@@ -310,12 +311,6 @@ module Delayed
       end
 
     public
-      if CANVAS_RAILS2
-        def before_save
-          initialize_defaults
-        end
-      end
-
       def initialize_defaults
         self.queue ||= Delayed::Worker.queue
         self.run_at ||= self.class.db_time_now

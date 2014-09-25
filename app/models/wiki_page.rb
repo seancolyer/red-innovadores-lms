@@ -30,6 +30,14 @@ class WikiPage < ActiveRecord::Base
 
   belongs_to :wiki, :touch => true
   belongs_to :user
+
+  EXPORTABLE_ATTRIBUTES = [
+    :id, :wiki_id, :title, :body, :workflow_state, :recent_editors, :user_id, :created_at, :updated_at, :url, :delayed_post_at, :protected_editing, :hide_from_students,
+    :editing_roles, :view_count, :revised_at, :could_be_locked, :cloned_item_id, :wiki_page_comments_count
+  ]
+
+  EXPORTABLE_ASSOCIATIONS = [:wiki, :user]
+
   acts_as_url :title, :scope => [:wiki_id, :not_deleted], :sync_url => true
 
   validate :validate_front_page_visibility
@@ -83,11 +91,7 @@ class WikiPage < ActiveRecord::Base
       self.write_attribute('hide_from_students', nil)
     end
   end
-  if CANVAS_RAILS2
-    alias_method :after_find, :normalize_hide_from_students
-  else
-    after_find :normalize_hide_from_students
-  end
+  after_find :normalize_hide_from_students
   private :normalize_hide_from_students
 
   def hide_from_students
@@ -209,21 +213,21 @@ class WikiPage < ActiveRecord::Base
     self.versions.map(&:model)
   end
 
-  scope :active, where(:workflow_state => 'active')
+  scope :active, -> { where(:workflow_state => 'active') }
 
-  scope :deleted_last, order("workflow_state='deleted'")
+  scope :deleted_last, -> { order("workflow_state='deleted'") }
 
-  scope :not_deleted, where("wiki_pages.workflow_state<>'deleted'")
+  scope :not_deleted, -> { where("wiki_pages.workflow_state<>'deleted'") }
 
-  scope :published, where("wiki_pages.workflow_state='active' AND (wiki_pages.hide_from_students=? OR wiki_pages.hide_from_students IS NULL)", false)
-  scope :unpublished, where("wiki_pages.workflow_state='unpublished' OR (wiki_pages.hide_from_students=? AND wiki_pages.workflow_state<>'deleted')", true)
+  scope :published, -> { where("wiki_pages.workflow_state='active' AND (wiki_pages.hide_from_students=? OR wiki_pages.hide_from_students IS NULL)", false) }
+  scope :unpublished, -> { where("wiki_pages.workflow_state='unpublished' OR (wiki_pages.hide_from_students=? AND wiki_pages.workflow_state<>'deleted')", true) }
 
   # needed for ensure_unique_url
   def not_deleted
     !deleted?
   end
 
-  scope :order_by_id, order(:id)
+  scope :order_by_id, -> { order(:id) }
 
   def locked_for?(user, opts={})
     return false unless self.could_be_locked
@@ -271,10 +275,10 @@ class WikiPage < ActiveRecord::Base
     given {|user, session| self.can_read_page?(user, session)}
     can :read
 
-    given {|user, session| self.can_edit_page?(user)}
+    given {|user| self.can_edit_page?(user)}
     can :read
 
-    given {|user, session| user && self.can_edit_page?(user)}
+    given {|user| user && self.can_edit_page?(user)}
     can :update_content and can :read_revisions
 
     given {|user, session| user && self.can_edit_page?(user) && self.wiki.grants_right?(user, session, :create_page)}
@@ -424,13 +428,5 @@ class WikiPage < ActiveRecord::Base
       self.body = t "#application.wiki_front_page_default_content_group", "Welcome to your new group wiki!" if context.is_a?(Group)
       self.workflow_state = 'active'
     end
-  end
-
-  def self.process_migration(*args)
-    Importers::WikiPageImporter.process_migration(*args)
-  end
-
-  def self.import_from_migration(*args)
-    Importers::WikiPageImporter.import_from_migration(*args)
   end
 end

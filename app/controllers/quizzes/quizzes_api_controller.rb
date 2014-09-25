@@ -43,6 +43,11 @@
 #           "example": "http://canvas.example.edu/courses/1/quizzes/2?persist_healdess=1&force_user=1",
 #           "type": "string"
 #         },
+#         "preview_url": {
+#           "description": "A url that can be visited in the browser with a POST request to preview a quiz as the teacher. Only present when the user may grade",
+#           "example": "http://canvas.example.edu/courses/1/quizzes/2/take?preview=1",
+#           "type": "string"
+#         },
 #         "description": {
 #           "description": "the description of the quiz",
 #           "example": "This is a quiz on Act 3 of Hamlet",
@@ -101,6 +106,11 @@
 #           "description": "prevent the students from seeing correct answers after the specified date has passed. only valid if show_correct_answers=true",
 #           "example": "2013-01-23T23:59:00-07:00",
 #           "type": "datetime"
+#         },
+#         "one_time_results": {
+#           "description": "prevent the students from seeing their results more than once (right after they submit the quiz)",
+#           "example": true,
+#           "type": "boolean"
 #         },
 #         "scoring_policy": {
 #           "description": "which quiz score to keep (only if allowed_attempts != 1) possible values: 'keep_highest', 'keep_latest'",
@@ -191,6 +201,11 @@
 #           "example": "http://canvas.instructure.com/courses/1/speed_grader?assignment_id=1",
 #           "type": "string"
 #         },
+#         "quiz_extensions_url": {
+#           "description": "Link to endpoint to send extensions for this quiz.",
+#           "example": "http://canvas.instructure.com/courses/1/quizzes/2/quiz_extensions",
+#           "type": "string"
+#         },
 #         "permissions": {
 #           "$ref": "QuizPermissions",
 #           "description": "Permissions the user has for the quiz"
@@ -265,17 +280,26 @@ class Quizzes::QuizzesApiController < ApplicationController
   # @returns [Quiz]
   def index
     if authorized_action(@context, @current_user, :read) && tab_enabled?(@context.class::TAB_QUIZZES)
-      api_route = api_v1_course_quizzes_url(@context)
-      scope = Quizzes::Quiz.search_by_attribute(@context.quizzes.active, :title, params[:search_term])
-      json = if accepts_jsonapi?
+      updated = @context.quizzes.active.reorder('updated_at DESC').limit(1).pluck(:updated_at).first
+      cache_key = ['quizzes', @context.id, @context.quizzes.active.size,
+                   @current_user, updated, accepts_jsonapi?,
+                   params[:search_term], params[:page], params[:per_page]
+                  ].cache_key
+
+      json = Rails.cache.fetch(cache_key) do
+        api_route = api_v1_course_quizzes_url(@context)
+        scope = Quizzes::Quiz.search_by_attribute(@context.quizzes.active, :title, params[:search_term])
         unless is_authorized_action?(@context, @current_user, :manage_assignments)
           scope = scope.available
         end
-        jsonapi_quizzes_json(scope: scope, api_route: api_route)
-      else
-        @quizzes = Api.paginate(scope, self, api_route)
-        quizzes_json(@quizzes, @context, @current_user, session)
+        json = if accepts_jsonapi?
+          jsonapi_quizzes_json(scope: scope, api_route: api_route)
+        else
+          @quizzes = Api.paginate(scope, self, api_route)
+          quizzes_json(@quizzes, @context, @current_user, session)
+        end
       end
+
       render json: json
     end
   end
@@ -394,6 +418,12 @@ class Quizzes::QuizzesApiController < ApplicationController
   #   submissions for the quiz, you may not unpublish a quiz and will recieve
   #   an error.
   #
+  # @argument quiz[one_time_results] [Optional, Boolean]
+  #   Whether students should be prevented from viewing their quiz results past
+  #   the first time (right after they turn the quiz in.)
+  #   Only valid if "hide_results" is not set to "always".
+  #   Defaults to false.
+  #
   # @returns Quiz
   def create
     if authorized_action(@context.quizzes.scoped.new, @current_user, :create)
@@ -423,7 +453,11 @@ class Quizzes::QuizzesApiController < ApplicationController
     if authorized_action(@quiz, @current_user, :update)
       update_api_quiz(@quiz, params)
       if @quiz.valid?
-        render_json
+        if accepts_jsonapi?
+          head :no_content
+        else
+          render_json
+        end
       else
         errors = @quiz.errors.as_json[:errors]
         errors['published'] = errors.delete(:workflow_state) if errors.has_key?(:workflow_state)
@@ -469,11 +503,7 @@ class Quizzes::QuizzesApiController < ApplicationController
   private
 
   def render_json
-    if accepts_jsonapi?
-      render json: { quizzes: quizzes_json([@quiz], @context, @current_user, session) }
-    else
-      render json: quiz_json(@quiz, @context, @current_user, session)
-    end
+    render json: quiz_json(@quiz, @context, @current_user, session)
   end
 
   def quiz_params

@@ -66,7 +66,74 @@ describe "Importing modules" do
     topic = Importers::ContextModuleImporter.import_from_migration(data, context)
     topic.content_tags.count.should == 1
   end
-  
-  
+
+  it "should link to translated external tool urls" do
+    data = { :migration_id => "1", :title => "derp",
+      :items => [{
+        :migration_id => 'mig1',
+        :type => "linked_resource",
+        :linked_resource_title => "whatevs",
+        :linked_resource_type => "contextexternaltool",
+        :linked_resource_id => '2',
+        :url => "http://exmpale.com/stuff"
+      },
+      {
+        :migration_id => 'mig2',
+        :type => "linked_resource",
+        :linked_resource_title => "whatevs2",
+        :linked_resource_type => "contextexternaltool",
+        :linked_resource_id => '3',
+        :url => "http://exmpale2.com/stuff?query=yay"
+      }]
+    }
+
+    course_model
+    tool1 = @course.context_external_tools.create!(:name => "somethin", :domain => "exmpale.com",
+                                                  :shared_secret => 'fake', :consumer_key => 'fake')
+    tool2 = @course.context_external_tools.create!(:name => "somethin2", :domain => "exmpale2.com",
+                                                  :shared_secret => 'fake', :consumer_key => 'fake')
+    migration = ContentMigration.new
+    migration.add_external_tool_translation('2', tool1, {'heresacustomfields' => 'hooray and stuff'})
+    migration.add_external_tool_translation('3', tool1, {'different' => 'field'})
+
+    topic = Importers::ContextModuleImporter.import_from_migration(data, @course, migration)
+    topic.reload
+
+    topic.content_tags.count.should == 2
+    tag1 = topic.content_tags.find_by_migration_id('mig1')
+    tag1.url.should == 'http://exmpale.com/stuff?custom_heresacustomfields=hooray+and+stuff'
+    tag1.content.should == tool1
+
+    tag2 = topic.content_tags.find_by_migration_id('mig2')
+    tag2.url.should == 'http://exmpale2.com/stuff?query=yay&custom_different=field'
+    tag2.content.should == tool2
+  end
+
+  it "should not create a blank tag if the content is not found" do
+    data = { :migration_id => "1", :title => "derp",
+             :items => [{
+                :migration_id => 'mig1',
+                :type => "linked_resource",
+                :linked_resource_title => "whatevs",
+                :linked_resource_type => "externalurl",
+                :url => "http://exmpale.com/stuff"
+              },
+              {
+                :migration_id => 'mig2',
+                :type => "linked_resource",
+                :linked_resource_title => "whatevs",
+                :linked_resource_type => "WikiPage",
+                :linked_resource_id => '2'
+              }],
+             :completion_requirements => [{:type => "must_view", :item_migration_id => "mig1"}]
+    }
+
+    course_model
+    migration = ContentMigration.new
+    mod = Importers::ContextModuleImporter.import_from_migration(data, @course, migration)
+    mod.reload
+
+    mod.content_tags.count.should == 1
+  end
 
 end

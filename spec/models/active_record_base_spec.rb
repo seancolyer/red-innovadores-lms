@@ -20,6 +20,8 @@ require File.expand_path(File.dirname(__FILE__) + '/../spec_helper.rb')
 
 describe ActiveRecord::Base do
   describe "count_by_date" do
+    let_once(:account) { Account.create! }
+
     def create_courses(account, start_times)
       start_times.each_with_index do |time, i|
         (i + 1).times do
@@ -37,7 +39,6 @@ describe ActiveRecord::Base do
         Time.zone.now.advance(:days => -2),
         Time.zone.now.advance(:days => -3)
       ]
-      account = Account.create!
       create_courses(account, start_times)
 
       # updated_at
@@ -55,7 +56,6 @@ describe ActiveRecord::Base do
         Time.zone.now.advance(:days => -20),
         Time.zone.now.advance(:days => 1)
       ]
-      account = Account.create!
       create_courses(account, start_times)
 
       # updated_at
@@ -68,7 +68,7 @@ describe ActiveRecord::Base do
   end
 
   describe "find in batches" do
-    before do
+    before :once do
       @c1 = course(:name => 'course1', :active_course => true)
       @c2 = course(:name => 'course2', :active_course => true)
       u1 = user(:name => 'user1', :active_user => true)
@@ -182,7 +182,7 @@ describe ActiveRecord::Base do
   end
 
   context "unique_constraint_retry" do
-    before do
+    before :once do
       @user = user_model
       @assignment = assignment_model
       @orig_user_count = User.count
@@ -302,7 +302,7 @@ describe ActiveRecord::Base do
       ConversationMessage.add_polymorph_methods :asset, [:other_polymorphy_thing]
     end
     
-    before do
+    before :once do
       @conversation = Conversation.create
       @user = user_model
       @assignment = assignment_model
@@ -376,7 +376,7 @@ describe ActiveRecord::Base do
   end
 
   context "distinct" do
-    before do
+    before :once do
       User.create()
       User.create()
       User.create(:locale => "en")
@@ -475,7 +475,7 @@ describe ActiveRecord::Base do
   end
 
   context "Finder tests" do
-    before(:each) do
+    before :once do
       @user = user_model
     end
 
@@ -506,15 +506,17 @@ describe ActiveRecord::Base do
   end
 
   describe "update_all/delete_all with_joins" do
-    before do
-      pending "MySQL and Postgres only" unless %w{PostgreSQL MySQL Mysql2}.include?(ActiveRecord::Base.connection.adapter_name)
-
+    before :once do
       @u1 = User.create!(:name => 'a')
       @u2 = User.create!(:name => 'b')
       @p1 = @u1.pseudonyms.create!(:unique_id => 'pa', :account => Account.default)
       @p1_2 = @u1.pseudonyms.create!(:unique_id => 'pa2', :account => Account.default)
       @p2 = @u2.pseudonyms.create!(:unique_id => 'pb', :account => Account.default)
       @p1_2.destroy
+    end
+
+    before do
+      pending "MySQL and Postgres only" unless %w{PostgreSQL MySQL Mysql2}.include?(ActiveRecord::Base.connection.adapter_name)
     end
 
     it "should do an update all with a join" do
@@ -544,96 +546,6 @@ describe ActiveRecord::Base do
     end
   end
 
-  context "fake arel extensions" do
-    before do
-      pending "only apply to rails 2" unless CANVAS_RAILS2
-      @user = User.create!(:name => 'a')
-      @cc = @user.communication_channels.create!(:path => 'nobody@example.com')
-    end
-
-    describe "scoped" do
-      it "should work on models, associations, and scopes" do
-        # all we care is that we can call it with no arguments
-        User.scoped
-        User.scoped.scoped
-        @user.communication_channels.scoped
-      end
-    end
-
-    describe "except" do
-      it "should work on models, associations, and scopes" do
-        User.except(:select).scope(:find, :select).should be_nil
-        User.scoped.select(:id).except(:select).scope(:find, :select).should be_nil
-        @user.communication_channels.except(:select).scope(:find, :select).should be_nil
-      end
-
-      it "should work for :includes (Rails 3 name, Rails 2 name is :include)" do
-        User.includes(:communication_channels).except(:includes).scope(:find, :include).should be_nil
-      end
-    end
-
-    describe "reorder" do
-      it "should work on models, associations, and scopes" do
-        User.reorder(:id).scope(:find, :order).should == 'id'
-        User.scoped.reorder(:id).scope(:find, :order).should == 'id'
-        @user.communication_channels.reorder(:id).scope(:find, :order).should == 'id'
-      end
-
-      it "should discard previous order by options" do
-        User.order(:id).reorder(:name).scope(:find, :order).should == 'name'
-      end
-    end
-
-    describe "uniq" do
-      it "should work on models, associations, and scopes" do
-        User.uniq.scope(:find, :select).should match /DISTINCT/
-        User.scoped.uniq.scope(:find, :select).should match /DISTINCT/
-        @user.communication_channels.uniq.scope(:find, :select).should match /DISTINCT/
-      end
-
-      it "should un-unique" do
-        User.uniq.uniq(false).scope(:find, :select).should_not match /DISTINCT/
-      end
-
-      it "should un-unique custom DISTINCT" do
-        select = User.select('DISTINCT id').uniq(false).scope(:find, :select)
-        select.should_not be_nil
-        select.should_not match /DISTINCT/
-        select.should match /id/
-      end
-    end
-
-    describe "select" do
-      it "should work on models, associations, and scopes" do
-        User.select(:id).scope(:find, :select).should == 'id'
-        User.scoped.select(:id).scope(:find, :select).should == 'id'
-        @user.communication_channels.select(:id).scope(:find, :select).should == 'id'
-      end
-    end
-
-    describe "pluck" do
-      it "should work on models, associations, and scopes" do
-        User.pluck(:id).should be_include(@user.id)
-        User.where(id: @user).pluck(:id).should == [@user.id]
-        @user.communication_channels.pluck(:id).should == [@cc.id]
-      end
-    end
-
-    describe "scope chaining" do
-      it "should merge select" do
-        User.select(:id).select(:name).scope(:find, :select).should == 'id, name'
-      end
-
-      it "should merge order" do
-        User.order(:id).order(:name).scope(:find, :order).should == 'id, name'
-      end
-
-      it "should merge group" do
-        User.group(:id).group(:name).scope(:find, :group).should == 'id, name'
-      end
-    end
-  end
-
   describe "add_index" do
     it "should raise an error on too long of name" do
       name = 'some_really_long_name_' * 10
@@ -648,7 +560,7 @@ describe ActiveRecord::Base do
   end
 
   describe ".nulls" do
-    before do
+    before :once do
       @u1 = User.create!
       User.where(id: @u1).update_all(name: nil)
       @u2 = User.create!(name: 'a')

@@ -24,7 +24,7 @@ describe Course do
     # the whole example JSON from Bracken because the formatting is
     # somewhat in flux
     json = File.open(File.join(IMPORT_JSON_DIR, 'import_from_migration.json')).read
-    data = JSON.parse(json)
+    data = JSON.parse(json).with_indifferent_access
     data['all_files_export'] = {
       'file_path'  => File.join(IMPORT_JSON_DIR, 'import_from_migration_small.zip')
     }
@@ -94,7 +94,7 @@ describe Course do
     file.should_not be_nil
     re = Regexp.new("\\/courses\\/#{course.id}\\/files\\/#{file.id}\\/preview")
     page.body.should match(re) #)
-    
+
     # assignment tests
     course.reload
     length = course.root_account.feature_enabled?(:draft_state) ? 5 : 4
@@ -106,8 +106,8 @@ describe Course do
     assignment.title.should eql("Concert Review Assignment")
     assignment.description.should match(Regexp.new("USE THE TEXT BOX!  DO NOT ATTACH YOUR ASSIGNMENT!!"))
     # The old due date (Fri Mar 27 23:55:00 -0600 2009) should have been adjusted to new time frame
-    assignment.due_at.year.should == 2011 
-    
+    assignment.due_at.year.should == 2011
+
     # discussion topic assignment
     assignment = course.assignments.find_by_migration_id("1865116155002")
     assignment.should_not be_nil
@@ -127,10 +127,10 @@ describe Course do
     file = course.attachments.find_by_migration_id("1865116527002")
     file.should_not be_nil
     assignment.description.should match(Regexp.new("/files/#{file.id}/download"))
-    
+
     # calendar events
     course.calendar_events.should be_empty
-    
+
     # rubrics
     course.rubrics.length.should eql(1)
     rubric = course.rubrics.first
@@ -146,7 +146,7 @@ describe Course do
     criterion["ratings"][1]["description"].should eql("Meet Expectations - asdf")
     criterion["ratings"][2]["points"].should eql(5.0)
     criterion["ratings"][2]["description"].should eql("Need Improvement - rubric entry text")
-    
+
     # Grammar
     criterion = rubric.data[1]
     criterion["description"].should eql("Grammar")
@@ -158,7 +158,7 @@ describe Course do
     criterion["ratings"][1]["description"].should eql("Meet Expectations")
     criterion["ratings"][2]["points"].should eql(5.0)
     criterion["ratings"][2]["description"].should eql("Need Improvement - you smell")
-    
+
     # Style
     criterion = rubric.data[2]
     criterion["description"].should eql("Style")
@@ -170,7 +170,7 @@ describe Course do
     criterion["ratings"][1]["description"].should eql("Meet Expectations")
     criterion["ratings"][2]["points"].should eql(5.0)
     criterion["ratings"][2]["description"].should eql("Need Improvement")
-    
+
     #groups
     course.groups.length.should eql(2)
 
@@ -202,19 +202,21 @@ describe Course do
 
     Importers::CourseContentImporter.import_content(@course, data, params, migration)
 
-    aqb1 = @course.assessment_question_banks.find_by_migration_id("i7ed12d5eade40d9ee8ecb5300b8e02b2")
+    aqb1 = @course.assessment_question_banks.find_by_migration_id("i7c16375e1a00381824d060d3d4f9acc4")
     aqb1.assessment_questions.count.should == 3
-    aqb2 = @course.assessment_question_banks.find_by_migration_id("ife86eb19e30869506ee219b17a6a1d4e")
+    aqb2 = @course.assessment_question_banks.find_by_migration_id("i966491408fab70dfc76ae02b197938a3")
     aqb2.assessment_questions.count.should == 2
   end
 
-  it "should not create assessment question banks or import questions for quizzes that are not selected" do
+  it "should not create assessment question banks if they are not selected" do
     course
 
     json = File.open(File.join(IMPORT_JSON_DIR, 'assessments.json')).read
     data = JSON.parse(json).with_indifferent_access
 
-    params = {"copy" => {"quizzes" => {"i7ed12d5eade40d9ee8ecb5300b8e02b2" => true}}}
+    params = {"copy" => {"assessment_question_banks" => {"i7c16375e1a00381824d060d3d4f9acc4" => true},
+                         "quizzes" => {"i7ed12d5eade40d9ee8ecb5300b8e02b2" => true,
+                                       "ife86eb19e30869506ee219b17a6a1d4e" => true}}}
 
     migration = ContentMigration.create!(:context => @course)
     migration.migration_settings[:migration_ids_to_import] = params
@@ -222,12 +224,17 @@ describe Course do
 
     Importers::CourseContentImporter.import_content(@course, data, params, migration)
 
-    aqb1 = @course.assessment_question_banks.find_by_migration_id("i7ed12d5eade40d9ee8ecb5300b8e02b2")
+    @course.assessment_question_banks.count.should == 1
+    aqb1 = @course.assessment_question_banks.find_by_migration_id("i7c16375e1a00381824d060d3d4f9acc4")
     aqb1.assessment_questions.count.should == 3
-    aqb2 = @course.assessment_question_banks.find_by_migration_id("ife86eb19e30869506ee219b17a6a1d4e")
-    aqb2.should be_nil
-
     @course.assessment_questions.count.should == 3
+
+    @course.quizzes.count.should == 2
+    quiz1 = @course.quizzes.find_by_migration_id("i7ed12d5eade40d9ee8ecb5300b8e02b2")
+    quiz1.quiz_questions.each{|qq| qq.assessment_question.should_not be_nil }
+
+    quiz2 = @course.quizzes.find_by_migration_id("ife86eb19e30869506ee219b17a6a1d4e")
+    quiz2.quiz_questions.each{|qq| qq.assessment_question.should be_nil } # since the bank wasn't brought in
   end
 
   describe "shift_date_options" do
@@ -239,6 +246,28 @@ describe Course do
       @course.conclude_at = 1.month.from_now
       options = Importers::CourseContentImporter.shift_date_options(@course, {})
       options[:time_zone].should == ActiveSupport::TimeZone['Eastern Time (US & Canada)']
+    end
+  end
+
+  describe "shift_date" do
+    it "should round sanely" do
+      course
+      @course.root_account.default_time_zone = Time.zone
+      options = Importers::CourseContentImporter.shift_date_options(@course, {
+          old_start_date: '2014-3-2',  old_end_date: '2014-4-26',
+          new_start_date: '2014-5-11', new_end_date: '2014-7-5'
+      })
+      unlock_at = DateTime.new(2014, 3, 23,  0,  0)
+      due_at    = DateTime.new(2014, 3, 29, 23, 59)
+      lock_at   = DateTime.new(2014, 4,  1, 23, 59)
+
+      new_unlock_at = Importers::CourseContentImporter.shift_date(unlock_at, options)
+      new_due_at    = Importers::CourseContentImporter.shift_date(due_at, options)
+      new_lock_at   = Importers::CourseContentImporter.shift_date(lock_at, options)
+
+      new_unlock_at.should == DateTime.new(2014, 6,  1,  0,  0)
+      new_due_at.should    == DateTime.new(2014, 6,  7, 23, 59)
+      new_lock_at.should   == DateTime.new(2014, 6, 10, 23, 59)
     end
   end
 
@@ -261,12 +290,15 @@ describe Course do
   end
 
   describe "import_settings_from_migration" do
-    before do
+    before :once do
       course_with_teacher
       @course.storage_quota = 1
-      @cm = ContentMigration.new(:context => @course, :user => @user, :copy_options => {:everything => "1"})
-      @cm.user = @user
-      @cm.save!
+      @cm = ContentMigration.create!(
+        :context => @course,
+        :user => @user,
+        :source_course => @course,
+        :copy_options => {:everything => "1"}
+      )
     end
 
     it "should not adjust for unauthorized user" do
@@ -281,9 +313,31 @@ describe Course do
     end
 
     it "should be set for course copy" do
-      @cm.source_course = @course
+      @cm.migration_type = 'course_copy_importer'
       Importers::CourseContentImporter.import_settings_from_migration(@course, {:course=>{:storage_quota => 4}}, @cm)
       @course.storage_quota.should == 4
+    end
+  end
+
+  describe "audit logging" do
+    it "should log content migration in audit logs" do
+      course
+
+      json = File.open(File.join(IMPORT_JSON_DIR, 'assessments.json')).read
+      data = JSON.parse(json).with_indifferent_access
+
+      params = {"copy" => {"quizzes" => {"i7ed12d5eade40d9ee8ecb5300b8e02b2" => true}}}
+
+      migration = ContentMigration.create!(:context => @course)
+      migration.migration_settings[:migration_ids_to_import] = params
+      migration.source_course = @course
+      migration.initiated_source = :manual
+      migration.user = @user
+      migration.save!
+
+      Auditors::Course.expects(:record_copied).once.with(migration.source_course, @course, migration.user, source: migration.initiated_source)
+
+      Importers::CourseContentImporter.import_content(@course, data, params, migration)
     end
   end
 end

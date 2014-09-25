@@ -22,12 +22,10 @@ describe AvatarHelper do
   include AvatarHelper
 
   context "avatars" do
-    let(:user) {user_model(short_name: "test user")}
+    let_once(:user) {user_model(short_name: "test user")}
     let(:services) {{avatars: true}}
     let(:avatar_size) {50}
-    unless CANVAS_RAILS2
-      let(:request) { Rack::Request.new(Rack::MockRequest.env_for("http://test.host/")) }
-    end
+    let(:request) { Rack::Request.new(Rack::MockRequest.env_for("http://test.host/")) }
 
     def service_enabled?(type)
       services[type]
@@ -59,7 +57,7 @@ describe AvatarHelper do
     end
 
     describe ".avatar" do
-      let(:user) {user_model}
+      let_once(:user) {user_model}
 
       it "leaves off the href if url is nil" do
         avatar(user, url: nil).should_not match(/href/)

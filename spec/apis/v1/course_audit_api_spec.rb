@@ -36,7 +36,7 @@ describe "CourseAudit API", type: :request do
     include_examples "cassandra audit logs"
 
     before do
-      @request_id = UUIDSingleton.instance.generate
+      @request_id = CanvasUUID.generate
       RequestContextGenerator.stubs( :request_id => @request_id )
 
       @domain_root_account = Account.default
@@ -117,7 +117,7 @@ describe "CourseAudit API", type: :request do
         record = Auditors::Course::Record.new(
           'course' => @course,
           'user' => @teacher,
-          'event_type' => 'settings',
+          'event_type' => 'updated',
           'event_data' => @course.changes,
           'created_at' => 1.day.ago
         )

@@ -91,9 +91,13 @@ describe "conversations new" do
     end
   end
 
-  def select_message_course(new_course)
+  def select_message_course(new_course, is_group = false)
     new_course = new_course.name if new_course.respond_to? :name
     fj('.dropdown-toggle', get_message_course).click
+    if is_group
+      wait_for_ajaximations
+      fj("a:contains('Groups')", get_message_course).click
+    end
     fj("a:contains('#{new_course}')", get_message_course).click
   end
 
@@ -135,11 +139,22 @@ describe "conversations new" do
     job.invoke_job
   end
 
+  let :modifier do
+    if driver.execute_script('return !!window.navigator.userAgent.match(/Macintosh/)')
+      :meta
+    else
+      :control
+    end
+  end
+
   before do
     conversation_setup
     @s1 = user(name: "first student")
     @s2 = user(name: "second student")
     [@s1, @s2].each { |s| @course.enroll_student(s).update_attribute(:workflow_state, 'active') }
+    cat = @course.group_categories.create(:name => "the groups")
+    @group = cat.groups.create(:name => "the group", :context => @course)
+    @group.users = [@s1, @s2]
   end
 
   describe "message sending" do
@@ -177,6 +192,19 @@ describe "conversations new" do
       fj('#compose-new-message .ac-input').should have_attribute(:disabled, 'true')
     end
 
+    it "should allow non-admins to send a message to an account-level group" do
+      @group = Account.default.groups.create(:name => "the group")
+      @group.add_user(@s1)
+      @group.add_user(@s2)
+      @group.save
+      user_logged_in({:user => @s1})
+      get_conversations
+      fj('#compose-btn').click
+      wait_for_ajaximations
+      select_message_course(@group, true)
+      add_message_recipient @s2
+    end
+
     it "should allow admins to message users from their profiles" do
       user = account_admin_user
       user_logged_in({:user => user})
@@ -189,6 +217,28 @@ describe "conversations new" do
       f('.ac-token').should_not be_nil
     end
 
+    it "should allow selecting multiple recipients in one search" do
+      get_conversations
+      fj('#compose-btn').click
+      wait_for_ajaximations
+      select_message_course(@course)
+      get_message_recipients_input.send_keys('student')
+      driver.action.key_down(modifier).perform
+      keep_trying_until { fj(".ac-result:contains('first student')") }.click
+      driver.action.key_up(modifier).perform
+      fj(".ac-result:contains('second student')").click
+      ff('.ac-token').count.should == 2
+    end
+
+    it "should not send the message on shift-enter" do
+      get_conversations
+      compose course: @course, to: [@s1], subject: 'context-free', body: 'hallo!', send: false
+      driver.action.key_down(:shift).perform
+      get_message_body_input.send_keys(:enter)
+      driver.action.key_up(:shift).perform
+      fj('#compose-new-message:visible').should_not be_nil
+    end
+
     context "user notes" do
       before(:each) do
         @course.account.update_attribute(:enable_user_notes, true)
@@ -197,15 +247,29 @@ describe "conversations new" do
       end
 
       it "should be allowed on new private conversations with students" do
-        compose course: @course, to: [@s1], body: 'hallo!', send: false
+        compose course: @course, to: [@s1, @s2], body: 'hallo!', send: false
 
         checkbox = f(".user_note")
         checkbox.should be_displayed
         checkbox.click
 
-        count = @s1.user_notes.count
+        count1 = @s1.user_notes.count
+        count2 = @s2.user_notes.count
         click_send
-        @s1.user_notes.reload.count.should == count + 1
+        @s1.user_notes.reload.count.should == count1 + 1
+        @s2.user_notes.reload.count.should == count2 + 1
+      end
+
+      it "should be allowed with student groups" do
+        compose course: @course, to: [@group], body: 'hallo!', send: false
+
+        checkbox = f(".user_note")
+        checkbox.should be_displayed
+        checkbox.click
+
+        count1 = @s1.user_notes.count
+        click_send
+        @s1.user_notes.reload.count.should == count1 + 1
       end
 
       it "should not be allowed if disabled" do
@@ -222,19 +286,8 @@ describe "conversations new" do
         f(".user_note").should_not be_displayed
       end
 
-      it "should not be allowed with multiple recipients" do
-        compose course: @course, to: [@s1, @s2], body: 'hallo!', send: false
-        f(".user_note").should_not be_displayed
-      end
-
       it "should not be allowed with non-student recipient" do
         compose course: @course, to: [@teacher], body: 'hallo!', send: false
-        f(".user_note").should_not be_displayed
-      end
-
-      it "should not be allowed with group recipient" do
-        @group = @course.groups.create(:name => "the group")
-        compose course: @course, to: [@group], body: 'hallo!', send: false
         f(".user_note").should_not be_displayed
       end
     end
@@ -374,6 +427,7 @@ describe "conversations new" do
       wait_for_ajaximations
       conversation_elements.size.should == 0
       ffj('.message-list .paginatedLoadingIndicator:visible').length.should == 0
+      ffj('.actions .btn-group button:disabled').size.should == 4
     end
   end
 
@@ -458,14 +512,6 @@ describe "conversations new" do
                         conversation(@teacher, @s1, @s2, workflow_state: 'read')]
     end
 
-    let :modifier do
-      if driver.execute_script('return !!window.navigator.userAgent.match(/Macintosh/)')
-        :meta
-      else
-        :control
-      end
-    end
-
     def select_all_conversations
       driver.action.key_down(modifier).perform
       ff('.messages li').each do |message|
@@ -532,6 +578,46 @@ describe "conversations new" do
       run_progress_job
       keep_trying_until { ff('.star-btn.active').count.should == 2 }
       @conversations.each { |c| c.reload.should be_starred }
+    end
+  end
+
+  describe 'conversations inbox opt-out option' do
+    it "should be hidden a feature flag" do
+      get "/profile/settings"
+      ff('#disable_inbox').count.should == 0
+    end
+
+    it "should reveal when the feature flag is set" do
+      @course.root_account.enable_feature!(:allow_opt_out_of_inbox)
+      get "/profile/settings"
+      ff('#disable_inbox').count.should == 1
+    end
+
+    context "when activated" do
+      it "should set the notification preferences for conversations to ASAP, and hide those options" do
+        @course.root_account.enable_feature!(:allow_opt_out_of_inbox)
+        @teacher.reload.disabled_inbox?.should be_falsey
+        notification = Notification.create!(workflow_state: "active", name: "Conversation Message",
+                             category: "Conversation Message", delay_for: 0)
+        policy = NotificationPolicy.create!(notification_id: notification.id, communication_channel_id: @teacher.email_channel.id, broadcast: true, frequency: "weekly")
+        @teacher.update_attribute(:unread_conversations_count, 3)
+        sleep 0.5
+
+        get '/profile/communication'
+        ff('td[data-category="conversation_message"]').count.should == 1
+        ff('.unread-messages-count').count.should == 1
+
+        get "/profile/settings"
+        f('#disable_inbox').click
+        sleep 0.5
+
+        @teacher.reload.disabled_inbox?.should be_truthy
+
+        get '/profile/communication'
+        ff('td[data-category="conversation_message"]').count.should == 0
+        policy.reload.frequency.should == "immediately"
+        ff('.unread-messages-count').count.should == 0
+      end
     end
   end
 end

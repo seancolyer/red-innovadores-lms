@@ -83,7 +83,7 @@ class DiscussionEntriesController < ApplicationController
   #
   # @example_request
   #   curl -X PUT 'https://<canvas>/api/v1/courses/<course_id>/discussion_topics/<topic_id>/entries/<entry_id>' \
-  #        -F 'message=<message>' \ 
+  #        -F 'message=<message>' \
   #        -H "Authorization: Bearer <token>"
   def update
     @topic = @context.all_discussion_topics.active.find(params[:topic_id]) if params[:topic_id].present?
@@ -149,7 +149,6 @@ class DiscussionEntriesController < ApplicationController
     @topic = @context.discussion_topics.active.find(params[:discussion_topic_id])
     if !@topic.podcast_enabled && request.format == :rss
       @problem = t :disabled_podcasts_notice, "Podcasts have not been enabled for this topic."
-      params[:format] = 'html' if CANVAS_RAILS2
       render :template => "shared/unauthorized_feed", :layout => "layouts/application", :status => :bad_request, :formats => [:html] # :template => "shared/unauthorized_feed", :status => :bad_request
       return
     end
@@ -163,7 +162,7 @@ class DiscussionEntriesController < ApplicationController
       if !@topic.user_can_see_posts?(@current_user)
         @discussion_entries = []
       end
-      if @topic.locked_for?(@current_user) && !@topic.grants_right?(@current_user, nil, :update)
+      if @topic.locked_for?(@current_user) && !@topic.grants_right?(@current_user, :update)
         @discussion_entries = []
       end
       respond_to do |format|

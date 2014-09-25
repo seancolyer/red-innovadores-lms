@@ -113,6 +113,7 @@ define([
             src: opts.canvadoc_session_url,
             width: opts.width,
             height: opts.height,
+            allowfullscreen: "1",
             css: {border: 0}
         });
         iframe.appendTo($this);
@@ -200,7 +201,7 @@ define([
         if (opts.public_url) {
           loadGooglePreview()
         } else if (opts.attachment_id) {
-          var url = '/files/'+opts.attachment_id+'/public_url.json';
+          var url = '/api/v1/files/'+opts.attachment_id+'/public_url.json';
           if (opts.submission_id) {
             url += '?' + $.param({ submission_id: opts.submission_id });
           }
@@ -221,7 +222,7 @@ define([
           $this.html('<p>' + htmlEscape(I18n.t('errors.document_preview_processing', 'The document preview is currently being processed. Please try again later.')) + '</p>');
           $.ajaxJSON(opts.attachment_scribd_render_url, 'POST', {}, function() {}, function() {});
         } else {
-          $this.html('<p>' + htmlEscape(I18n.t('errors.cannot_view_document_inline', 'This document cannot be viewed inline.')) + '</p>');
+          $this.html('<p>' + htmlEscape(I18n.t('errors.cannot_view_document_in_canvas', 'This document cannot be displayed within Canvas.')) + '</p>');
         }
       }
     });

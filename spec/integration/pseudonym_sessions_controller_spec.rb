@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -36,10 +36,16 @@ describe PseudonymSessionsController do
     end
 
     def stubby(stub_response)
-      @cas_client = CASClient::Client.new({:cas_base_url => @account.account_authorization_config.auth_base})
+      @cas_client = CASClient::Client.new(
+        cas_base_url: @account.account_authorization_config.auth_base,
+        encode_extra_attributes_as: :raw
+      )
       @cas_client.instance_variable_set(:@stub_response, stub_response)
       def @cas_client.validate_service_ticket(st)
-        st.response = CASClient::ValidationResponse.new(@stub_response)
+        response = CASClient::ValidationResponse.new(@stub_response)
+        st.user = response.user
+        st.success = response.is_success?
+        return st
       end
       PseudonymSessionsController.any_instance.stubs(:cas_client).returns(@cas_client)
     end
@@ -56,7 +62,7 @@ describe PseudonymSessionsController do
       response.should redirect_to(dashboard_url(:login_success => 1))
       session[:cas_session].should == 'ST-abcd'
 
-      get logout_url
+      delete logout_url
       response.should redirect_to(@cas_client.logout_url(cas_login_url))
     end
 
@@ -92,9 +98,24 @@ describe PseudonymSessionsController do
       redirect_until(@cas_client.add_service_to_login_url(cas_login_url))
 
       get cas_login_url :ticket => 'ST-abcd'
-      response.should redirect_to(@cas_client.logout_url(cas_login_url :no_auto => true))
+      response.should redirect_to(cas_login_url(:no_auto => true))
       get cas_login_url :no_auto => true
       flash[:delegated_message].should match(/Canvas doesn't have an account for user/)
+    end
+
+    it "should redirect to a custom url if the user CAS account doesn't exist" do
+      redirect_url = login_url(:no_auto => 'true')
+      aac = Account.default.account_authorization_config
+      aac.unknown_user_url = redirect_url
+      aac.save
+
+      stubby("yes\nnonexistentuser\n")
+
+      get login_url
+      redirect_until(@cas_client.add_service_to_login_url(cas_login_url))
+
+      get cas_login_url :ticket => 'ST-abcd'
+      response.should redirect_to(redirect_url)
     end
 
     it "should login case insensitively" do
@@ -205,7 +226,7 @@ describe PseudonymSessionsController do
 
   it "should redirect back for jobs controller" do
     user_with_pseudonym(:password => 'qwerty', :active_all => 1)
-    Account.site_admin.add_user(@user)
+    Account.site_admin.account_users.create!(user: @user)
 
     get jobs_url
     response.should redirect_to login_url

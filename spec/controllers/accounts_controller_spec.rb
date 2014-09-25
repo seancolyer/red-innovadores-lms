@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -20,15 +20,19 @@ require File.expand_path(File.dirname(__FILE__) + '/../spec_helper')
 
 describe AccountsController do
   def account_with_admin_logged_in(opts = {})
+    account_with_admin(opts)
+    user_session(@admin)
+  end
+
+  def account_with_admin(opts = {})
     @account = opts[:account] || Account.default
     account_admin_user(account: @account)
-    user_session(@admin)
   end
 
   def cross_listed_course
     account_with_admin_logged_in
     @account1 = Account.create!
-    @account1.add_user(@user)
+    @account1.account_users.create!(user: @user)
     @course1 = @course
     @course1.account = @account1
     @course1.save!
@@ -40,22 +44,22 @@ describe AccountsController do
   end
 
   context "confirm_delete_user" do
+    before(:once) { account_with_admin }
+    before(:each) { user_session(@admin) }
+
     it "should confirm deletion of canvas-authenticated users" do
-      account_with_admin_logged_in
       user_with_pseudonym :account => @account
       get 'confirm_delete_user', :account_id => @account.id, :user_id => @user.id
       response.should be_success
     end
 
     it "should not confirm deletion of non-existent users" do
-      account_with_admin_logged_in
       get 'confirm_delete_user', :account_id => @account.id, :user_id => (User.all.map(&:id).max + 1)
       response.should redirect_to(account_url(@account))
       flash[:error].should =~ /No user found with that id/
     end
 
     it "should confirm deletion of managed password users" do
-      account_with_admin_logged_in
       user_with_managed_pseudonym :account => @account
       get 'confirm_delete_user', :account_id => @account.id, :user_id => @user.id
       response.should be_success
@@ -63,8 +67,10 @@ describe AccountsController do
   end
 
   context "remove_user" do
+    before(:once) { account_with_admin }
+    before(:each) { user_session(@admin) }
+
     it "should delete canvas-authenticated users" do
-      account_with_admin_logged_in
       user_with_pseudonym :account => @account
       @user.workflow_state.should == "pre_registered"
       post 'remove_user', :account_id => @account.id, :user_id => @user.id
@@ -75,14 +81,12 @@ describe AccountsController do
     end
 
     it "should do nothing for non-existent users as html" do
-      account_with_admin_logged_in
       post 'remove_user', :account_id => @account.id, :user_id => (User.all.map(&:id).max + 1)
       flash[:notice].should be_nil
       response.should redirect_to(account_users_url(@account))
     end
 
     it "should do nothing for non-existent users as json" do
-      account_with_admin_logged_in
       post 'remove_user', :account_id => @account.id, :user_id => (User.all.map(&:id).max + 1), :format => "json"
       flash[:notice].should be_nil
       json_parse(response.body).should == {}
@@ -106,7 +110,6 @@ describe AccountsController do
     end
 
     it "should delete users who have managed passwords with html" do
-      account_with_admin_logged_in
       user_with_managed_pseudonym :account => @account
       @user.workflow_state.should == "pre_registered"
       post 'remove_user', :account_id => @account.id, :user_id => @user.id
@@ -117,7 +120,6 @@ describe AccountsController do
     end
 
     it "should delete users who have managed passwords with json" do
-      account_with_admin_logged_in
       user_with_managed_pseudonym :account => @account
       @user.workflow_state.should == "pre_registered"
       post 'remove_user', :account_id => @account.id, :user_id => @user.id, :format => "json"
@@ -129,9 +131,10 @@ describe AccountsController do
   end
 
   describe "add_account_user" do
-    it "should allow adding a new account admin" do
-      account_with_admin_logged_in
+    before(:once) { account_with_admin }
+    before(:each) { user_session(@admin) }
 
+    it "should allow adding a new account admin" do
       post 'add_account_user', :account_id => @account.id, :membership_type => 'AccountAdmin', :user_list => 'testadmin@example.com'
       response.should be_success
 
@@ -142,7 +145,6 @@ describe AccountsController do
     end
 
     it "should allow adding an existing user to a sub account" do
-      account_with_admin_logged_in(:active_all => 1)
       @subaccount = @account.sub_accounts.create!
       @munda = user_with_pseudonym(:account => @account, :active_all => 1, :username => 'munda@instructure.com')
       post 'add_account_user', :account_id => @subaccount.id, :membership_type => 'AccountAdmin', :user_list => 'munda@instructure.com'
@@ -245,9 +247,13 @@ describe AccountsController do
   end
 
   context "special account ids" do
-    before do
-      account_with_admin_logged_in(:account => Account.site_admin)
+    before :once do
+      account_with_admin(:account => Account.site_admin)
       @account = Account.create!
+    end
+
+    before :each do
+      user_session(@admin)
       LoadAccount.stubs(:default_domain_root_account).returns(@account)
     end
 
@@ -302,7 +308,7 @@ describe AccountsController do
       user
       user_session(@user)
       @account = Account.create!
-      Account.site_admin.add_user(@user)
+      Account.site_admin.account_users.create!(user: @user)
       post 'update', :id => @account.id, :account => { :settings => { 
         :global_includes => true,
         :enable_profiles => true,
@@ -322,7 +328,7 @@ describe AccountsController do
       user_session(user)
       @account = Account.create!
       Account.register_service(:test3, { name: 'test3', description: '', expose_to_ui: :setting, default: false, expose_to_ui_proc: proc { |user, account| account == @account } })
-      Account.site_admin.add_user(@user)
+      Account.site_admin.account_users.create!(user: @user)
       post 'update', id: @account.id, account: {
         services: {
           'test1' => '1',
@@ -337,25 +343,28 @@ describe AccountsController do
     end
 
     describe "quotas" do
-      before do
+      before :once do
         @account = Account.create!
         user
-        user_session(@user)
         @account.default_storage_quota_mb = 123
         @account.default_user_storage_quota_mb = 45
         @account.default_group_storage_quota_mb = 9001
         @account.storage_quota = 555.megabytes
         @account.save!
       end
+
+      before :each do
+        user_session(@user)
+      end
       
       context "with :manage_storage_quotas" do
-        before do
+        before :once do
           custom_account_role 'quota-setter', :account => @account
           @account.role_overrides.create! :permission => 'manage_account_settings', :enabled => true,
                                           :enrollment_type => 'quota-setter'
           @account.role_overrides.create! :permission => 'manage_storage_quotas', :enabled => true,
                                           :enrollment_type => 'quota-setter'
-          @account.add_user @user, 'quota-setter'
+          @account.account_users.create!(user: @user, membership_type: 'quota-setter')
         end
         
         it "should allow setting default quota (mb)" do
@@ -388,11 +397,11 @@ describe AccountsController do
       end
       
       context "without :manage_storage_quotas" do
-        before do
+        before :once do
           custom_account_role 'quota-loser', :account => @account
           @account.role_overrides.create! :permission => 'manage_account_settings', :enabled => true,
                                           :enrollment_type => 'quota-loser'
-          @account.add_user @user, 'quota-loser'
+          @account.account_users.create!(user: @user, membership_type: 'quota-loser')
         end
         
         it "should disallow setting default quota (mb)" do
@@ -432,9 +441,8 @@ describe AccountsController do
     end
 
     context "turnitin" do
-      before do
-        account_with_admin_logged_in
-      end
+      before(:once) { account_with_admin }
+      before(:each) { user_session(@admin) }
 
       it "should allow setting turnitin values" do
         post 'update', :id => @account.id, :account => {
@@ -479,7 +487,7 @@ describe AccountsController do
   describe "#settings" do
     it "should load account report details" do
       account_with_admin_logged_in
-      report_type = AccountReport.available_reports(@account).keys.first
+      report_type = AccountReport.available_reports.keys.first
       report = @account.account_reports.create!(report_type: report_type, user: @admin)
 
       get 'settings', account_id: @account

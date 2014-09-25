@@ -1,7 +1,7 @@
-unless CANVAS_RAILS2  
+Rails.application.config.to_prepare do
   Switchman::Shard.class_eval do
     class << self
-      alias :birth :default
+      alias :birth :default unless instance_methods.include?(:birth)
 
       def current_with_delayed_jobs(category=:default)
         if category == :delayed_jobs
@@ -13,16 +13,30 @@ unless CANVAS_RAILS2
       alias_method_chain :current, :delayed_jobs
 
       def activate_with_delayed_jobs!(categories)
-        if !categories[:delayed_jobs] && categories[:default]
-          categories[:delayed_jobs] = categories[:default].delayed_jobs_shard
+        if !categories[:delayed_jobs] && categories[:default] && !@skip_delayed_job_auto_activation
+          skip_delayed_job_auto_activation do
+            categories[:delayed_jobs] = categories[:default].delayed_jobs_shard
+          end
         end
         activate_without_delayed_jobs!(categories)
+      end
+      alias_method_chain :activate!, :delayed_jobs
+
+      def skip_delayed_job_auto_activation
+        was = @skip_delayed_job_auto_activation
+        @skip_delayed_job_auto_activation = true
+        yield
+      ensure
+        @skip_delayed_job_auto_activation = was
       end
     end
 
     self.primary_key = "id"
     reset_column_information # make sure that the id column object knows it is the primary key
 
+    # make sure settings attribute is loaded, so that on class reload we don't get into a state
+    # that it thinks it's serialized, but the data isn't set up right
+    default.is_a?(self) && default.settings
     serialize :settings, Hash
     # the default shard was already loaded, but didn't deserialize it
     if default.is_a?(self)
@@ -35,6 +49,7 @@ unless CANVAS_RAILS2
     before_save :encrypt_settings
 
     def settings
+      return {} unless self.class.columns_hash.key?('settings')
       s = super
       unless s.is_a?(Hash) || s.nil?
         s = s.unserialize
@@ -86,6 +101,8 @@ unless CANVAS_RAILS2
     end
   end
 
+  Object.send(:remove_const, :Shard) if defined?(::Shard)
+  Object.send(:remove_const, :DatabaseServer) if defined?(::DatabaseServer)
   ::Shard = Switchman::Shard
   ::DatabaseServer = Switchman::DatabaseServer
 

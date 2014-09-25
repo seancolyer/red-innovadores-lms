@@ -17,13 +17,15 @@
 #
 module LtiOutbound
   class ToolLaunch
-    attr_reader :url, :tool, :user, :context, :link_code, :return_url,
-                :resource_type, :consumer_instance, :hash, :assignment, :outgoing_email_address, :selected_html
+    attr_reader :url, :tool, :user, :context, :link_code, :return_url, :account,
+                :resource_type, :consumer_instance, :hash, :assignment,
+                :outgoing_email_address, :selected_html, :variable_substitutor
 
     def initialize(options)
       @url = options[:url] || raise('URL required for generating LTI content')
       @tool = options[:tool] || raise('Tool required for generating LTI content')
       @user = options[:user] || raise('User required for generating LTI content')
+      @account = options[:account] || raise('Account required for generating LTI content')
       @context = options[:context] || raise('Context required for generating LTI content')
       @link_code = options[:link_code] || raise('Link Code required for generating LTI content')
       @return_url = options[:return_url] || raise('Return URL required for generating LTI content')
@@ -32,7 +34,17 @@ module LtiOutbound
       @selected_html = options[:selected_html]
       @consumer_instance = context.consumer_instance || raise('Consumer instance required for generating LTI content')
 
+      @variable_substitutor = options[:variable_substitutor]
+      variable_substitutor.add_substitution '$Person.name.family', @user.last_name
+      variable_substitutor.add_substitution '$Person.name.full', @user.name
+      variable_substitutor.add_substitution '$Person.name.given', @user.first_name
+      variable_substitutor.add_substitution '$Person.address.timezone', @user.timezone
+
       @hash = {}
+    end
+
+    def variable_substitutor
+      @variable_substitutor ||= VariableSubstitutor.new
     end
 
     def for_assignment!(assignment, outcome_service_url, legacy_outcome_service_url)
@@ -41,11 +53,8 @@ module LtiOutbound
       hash['lis_outcome_service_url'] = outcome_service_url
       hash['ext_ims_lis_basic_outcome_url'] = legacy_outcome_service_url
       hash['ext_outcome_data_values_accepted'] = assignment.return_types.join(',')
-      hash['custom_canvas_assignment_title'] = '$Canvas.assignment.title'
-      hash['custom_canvas_assignment_points_possible'] = '$Canvas.assignment.pointsPossible'
-      if tool.public?
-        hash['custom_canvas_assignment_id'] = '$Canvas.assignment.id'
-      end
+
+      add_assignment_substitutions!(assignment)
     end
 
     def for_homework_submission!(assignment)
@@ -55,7 +64,7 @@ module LtiOutbound
       hash['ext_content_return_types'] = assignment.return_types.join(',')
       hash['ext_content_file_extensions'] = assignment.allowed_extensions.join(',') if assignment.allowed_extensions
 
-      hash['custom_canvas_assignment_id'] = '$Canvas.assignment.id'
+      add_assignment_substitutions!(assignment)
     end
 
     def generate(overrides={})
@@ -117,13 +126,24 @@ module LtiOutbound
       set_resource_type_keys()
       hash['oauth_callback'] = 'about:blank'
 
-      variable_substitutor = VariableSubstitutor.new
-      variable_substitutor.substitute_all!(hash, user, assignment, context, consumer_instance)
+      variable_substitutor.substitute!(hash)
 
       self.class.generate_params(hash, url, tool.consumer_key, tool.shared_secret)
     end
 
     private
+
+    def add_assignment_substitutions!(assignment)
+      if tool.public?
+        hash['custom_canvas_assignment_id'] = '$Canvas.assignment.id'
+      end
+
+      hash['custom_canvas_assignment_title'] = '$Canvas.assignment.title'
+      hash['custom_canvas_assignment_points_possible'] = '$Canvas.assignment.pointsPossible'
+      @variable_substitutor.add_substitution('$Canvas.assignment.id', assignment.id)
+      @variable_substitutor.add_substitution('$Canvas.assignment.title', assignment.title)
+      @variable_substitutor.add_substitution('$Canvas.assignment.pointsPossible', assignment.points_possible)
+    end
 
     def set_resource_type_keys
       if resource_type == 'editor_button'
@@ -140,6 +160,11 @@ module LtiOutbound
         hash['ext_content_intended_use'] = 'homework'
         hash['ext_content_return_url'] = return_url
       elsif resource_type == 'migration_selection'
+        hash['ext_content_intended_use'] = 'content_package'
+        hash['ext_content_return_types'] = 'file'
+        hash['ext_content_file_extensions'] = 'zip,imscc'
+        hash['ext_content_return_url'] = return_url
+      elsif resource_type == 'course_home_sub_navigation'
         hash['ext_content_intended_use'] = 'content_package'
         hash['ext_content_return_types'] = 'file'
         hash['ext_content_file_extensions'] = 'zip,imscc'

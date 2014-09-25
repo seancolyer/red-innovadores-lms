@@ -243,27 +243,39 @@ define([
     }
   }
 
+  function formattedSubmissionStateName(raw, submission) {
+    switch(raw) {
+      case "graded":
+        return I18n.t('graded', "graded");
+      case "not_graded":
+        return I18n.t('not_graded', "not graded");
+      case "not_submitted":
+        return I18n.t('not_submitted', 'not submitted');
+      case "resubmitted":
+        return I18n.t('graded_then_resubmitted', "graded, then resubmitted (%{when})", {'when': $.datetimeString(submission.submitted_at)});
+    }
+  }
+
   function classNameBasedOnStudent(student){
     var raw = submissionStateName(student.submission);
-    var formatted = raw.replace("_", " ");
-    if (raw === "resubmitted") {
-      formatted = I18n.t('graded_then_resubmitted', "graded, then resubmitted (%{when})", {'when': $.datetimeString(student.submission.submitted_at)});
-    }
+    var formatted = formattedSubmissionStateName(raw, student.submission);
     return {raw: raw, formatted: formatted};
   }
+
+  var MENU_PARTS_DELIMITER = '----☃----'; // something random and unlikely to be in a person's name
 
   function initDropdown(){
     var hideStudentNames = utils.shouldHideStudentNames();
     $("#hide_student_names").attr('checked', hideStudentNames);
     var options = $.map(jsonData.studentsWithSubmissions, function(s, idx){
-      var name = htmlEscape(s.name),
+      var name = htmlEscape(s.name).replace(MENU_PARTS_DELIMITER, ""),
           className = classNameBasedOnStudent(s);
 
       if(hideStudentNames) {
         name = I18n.t('nth_student', "Student %{n}", {'n': idx + 1});
       }
 
-      return '<option value="' + s.id + '" class="' + className.raw + '">' + name + ' ---- ' + className.formatted +'</option>';
+      return '<option value="' + s.id + '" class="' + className.raw + ' ui-selectmenu-hasIcon">' + name + MENU_PARTS_DELIMITER + className.formatted + MENU_PARTS_DELIMITER + className.raw + '</option>';
     }).join("");
 
     $selectmenu = $("<select id='students_selectmenu'>" + options + "</select>")
@@ -271,18 +283,22 @@ define([
       .selectmenu({
         style:'dropdown',
         format: function(text){
-          var parts = text.split(" ---- ");
-          return '<span class="ui-selectmenu-item-header">' + htmlEscape(parts[0]) + '</span><span class="ui-selectmenu-item-footer">' + parts[1] + '</span>';
-        },
-        icons: [
-          {find: '.graded'},
-          {find: '.not_graded'},
-          {find: '.not_submitted'},
-          {find: '.resubmitted'}
-        ]
+          var parts = text.split(MENU_PARTS_DELIMITER);
+          return getIcon(parts[2]) + '<span class="ui-selectmenu-item-header">' + htmlEscape(parts[0]) + '</span><span class="ui-selectmenu-item-footer">' + htmlEscape(parts[1]) + '</span>';
+        }
       }).change(function(e){
         EG.handleStudentChanged();
       });
+
+    function getIcon(helper_text){
+      var icon = "<span class='ui-selectmenu-item-icon speedgrader-selectmenu-icon'>";
+      if(helper_text == "graded"){
+        icon += "<i class='icon-check'></i>";
+      }else if(["not_graded", "resubmitted"].indexOf(helper_text) != -1){
+        icon += "&#9679;";
+      }
+      return icon.concat("</span>");
+    }
 
     if (jsonData.context.active_course_sections.length && jsonData.context.active_course_sections.length > 1 && !jsonData.GROUP_GRADING_MODE) {
       var $selectmenu_list = $selectmenu.data('selectmenu').list,
@@ -290,7 +306,7 @@ define([
 
 
       $menu.find('ul').append($.map(jsonData.context.active_course_sections, function(section, i){
-        return '<li><a class="section_' + section.id + '" data-section-id="'+ section.id +'" href="#">'+ section.name  +'</a></li>';
+        return '<li><a class="section_' + section.id + '" data-section-id="'+ section.id +'" href="#">'+ htmlEscape(section.name) +'</a></li>';
       }).join(''));
 
       $menu.insertBefore($selectmenu_list).bind('mouseenter mouseleave', function(event){
@@ -876,8 +892,9 @@ define([
 
       $multiple_submissions.change(function(e) {
         if (typeof EG.currentStudent.submission == 'undefined') EG.currentStudent.submission = {};
-        var i = parseInt(e.target.value, 10);
-        EG.currentStudent.submission.currentSelectedIndex = i;
+        var i = $("#submission_to_view").val() ||
+                EG.currentStudent.submission.submission_history.length - 1;
+        EG.currentStudent.submission.currentSelectedIndex = parseInt(i, 10);
         EG.handleSubmissionSelectionChange();
       });
 
@@ -1135,8 +1152,8 @@ define([
         $turnitinInfoContainer = $("#submission_files_container .turnitin_info_container").empty();
         $.each(submission.versioned_attachments || [], function(i,a){
           var attachment = a.attachment;
-          if (attachment['crocodoc_available?'] ||
-              attachment['canvadocable?'] ||
+          if (attachment.crocodoc_url ||
+              attachment.canvadoc_url ||
               (attachment.scribd_doc && attachment.scribd_doc.created) ||
               $.isPreviewable(attachment.content_type, 'google')) {
             inlineableAttachments.push(attachment);
@@ -1208,6 +1225,9 @@ define([
 
       if (submissionHistory.length > 0) {
         var noSubmittedAt = I18n.t('no_submission_time', 'no submission time');
+        var selectedIndex = parseInt($("#submission_to_view").val() ||
+                                       submissionHistory.length - 1,
+                                     10);
         var templateSubmissions = _(submissionHistory).map(function(o, i) {
           var s = o.submission;
           if (s.grade && (s.grade_matches_current_submission ||
@@ -1217,11 +1237,12 @@ define([
           return {
             value: s.version || i,
             late: s.late,
+            selected: selectedIndex === i,
             submittedAt: $.datetimeString(s.submitted_at) || noSubmittedAt,
             grade: grade
           };
         });
-        _(templateSubmissions).last().selected = true;
+
         innerHTML = submissionsDropdownTemplate({
           singleSubmission: submissionHistory.length == 1,
           submissions: templateSubmissions,
@@ -1254,13 +1275,16 @@ define([
         })
       );
 
-      var gradedStudents = $.grep(jsonData.studentsWithSubmissions, function(s){
-        return (s.submission && s.submission.workflow_state === 'graded');
+      var gradedStudents = $.grep(jsonData.studentsWithSubmissions, function(s) {
+        return (s.submission &&
+                s.submission.workflow_state === 'graded' &&
+                s.submission.from_enrollment_type === "StudentEnrollment"
+        );
       });
-      var scores = $.map(gradedStudents, function(s){
+
+      var scores = $.map(gradedStudents , function(s){
         return s.submission.score;
       });
-      //scores shoud be an array that has all of the scores of the students that have submisisons
 
       if (scores.length) { //if there are some submissions that have been graded.
         $average_score_wrapper.show();
@@ -1282,9 +1306,10 @@ define([
       else { //there are no submissions that have been graded.
         $average_score_wrapper.hide();
       }
+
       $grded_so_far.html(
         I18n.t('portion_graded', '%{x} / %{y} Graded', {
-          x: scores.length,
+          x: gradedStudents.length,
           y: jsonData.context.students.length
         })
       );
@@ -1301,7 +1326,6 @@ define([
         $iframe_holder.empty();
 
         if (attachment) {
-          var crocodocAvailable = attachment['crocodoc_available?'];
           var scribdDocAvailable = attachment.scribd_doc && attachment.scribd_doc.created && attachment.workflow_state != 'errored' && attachment.scribd_doc.attributes.doc_id;
           var previewOptions = {
             height: '100%',
@@ -1316,27 +1340,10 @@ define([
             }
           };
         }
-        if (crocodocAvailable) {
-          var currentStudentIDAsOfAjaxCall = this.currentStudent.id;
-          var that = this;
-          $iframe_holder.show();
-          $iframe_holder.disableWhileLoading($.ajaxJSON(
-            '/submissions/' + this.currentStudent.submission.id + '/attachments/' + attachment.id + '/crocodoc_sessions/',
-            'POST',
-            {version: this.currentStudent.submission.currentSelectedIndex},
-            function(response) {
-              if (currentStudentIDAsOfAjaxCall == that.currentStudent.id) {
-                $iframe_holder.loadDocPreview($.extend(previewOptions, {
-                  crocodoc_session_url: response.session_url
-                }));
-              }
-            },
-            function() {
-              // pretend there isn't a crocodoc and try again
-              attachment['crocodoc_available?'] = false;
-              EG.handleSubmissionSelectionChange();
-            }
-          ));
+        if (attachment && attachment.crocodoc_url) {
+          $iframe_holder.show().loadDocPreview($.extend(previewOptions, {
+            crocodoc_session_url: attachment.crocodoc_url
+          }));
         }
         else if (attachment && attachment.canvadoc_url) {
           $iframe_holder.show().loadDocPreview($.extend(previewOptions, {
@@ -1372,6 +1379,7 @@ define([
             '/assignments/' + this.currentStudent.submission.assignment_id +
             '/submissions/' + this.currentStudent.submission.user_id +
             '?preview=true' + (
+
               this.currentStudent.submission &&
               !isNaN(this.currentStudent.submission.currentSelectedIndex) &&
               this.currentStudent.submission.currentSelectedIndex != null ?
@@ -1399,13 +1407,13 @@ define([
 
         $rubric_assessments_select.find("option").remove();
         $.each(this.currentStudent.rubric_assessments, function(){
-          $rubric_assessments_select.append('<option value="' + this.id + '">' + this.assessor_name + '</option>');
+          $rubric_assessments_select.append('<option value="' + this.id + '">' + htmlEscape(this.assessor_name) + '</option>');
         });
 
         // show a new option if there is not an assessment by me
         // or, if I can :manage_course, there is not an assessment already with assessment_type = 'grading'
         if( !assessmentsByMe.length || (ENV.RUBRIC_ASSESSMENT.assessment_type == 'grading' && !gradingAssessments.length) ) {
-          $rubric_assessments_select.append('<option value="new">' + I18n.t('new_assessment', '[New Assessment]') + '</option>');
+          $rubric_assessments_select.append('<option value="new">' + htmlEscape(I18n.t('new_assessment', '[New Assessment]')) + '</option>');
         }
 
         //select the assessment that meets these rules:
@@ -1614,6 +1622,22 @@ define([
           .addClass(className.raw)
           .find(".ui-selectmenu-item-footer")
             .text(className.formatted);
+
+        $status = $(".ui-selectmenu-status");
+        $statusIcon = $status.find(".speedgrader-selectmenu-icon");
+        $queryIcon = $query.find(".speedgrader-selectmenu-icon");
+
+        if(className.raw == "graded" && this == EG.currentStudent){
+          $queryIcon.text("").append("<i class='icon-check'></i>");
+          $status.addClass("graded");
+          $statusIcon.text("").append("<i class='icon-check'></i>");
+        }else if(className.raw == "not_graded" && this == EG.currentStudent){
+          $queryIcon.text("").append("&#9679;");
+          $status.removeClass("graded");
+          $statusIcon.text("").append("&#9679;");
+        }else{
+          $status.removeClass("graded");
+        }
 
         // this is because selectmenu.js uses .data('optionClasses' on the li to keep track
         // of what class to put on the selected option ( aka: $selectmenu.data('selectmenu').newelement )

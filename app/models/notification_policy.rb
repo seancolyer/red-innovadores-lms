@@ -21,7 +21,7 @@ class NotificationPolicy < ActiveRecord::Base
   belongs_to :notification
   belongs_to :communication_channel
   has_many :delayed_messages
-  
+
   attr_accessible :notification, :communication_channel, :frequency, :notification_id, :communication_channel_id
 
   validates_presence_of :communication_channel_id, :frequency
@@ -107,13 +107,7 @@ class NotificationPolicy < ActiveRecord::Base
         notifications.each do |notification_id|
           scope = user.notification_policies.
               where(communication_channel_id: params[:channel_id], notification_id: notification_id)
-          if CANVAS_RAILS2
-            # can't use find_or_initialize, cause Rails 2 gets confused
-            p = scope.first
-            p ||= user.notification_policies.build(communication_channel_id: params[:channel_id], notification_id: notification_id)
-          else
-            p = scope.first_or_initialize
-          end
+          p = scope.first_or_initialize
           # Set the frequency and save
           p.frequency = frequency
           p.save!
@@ -180,7 +174,8 @@ class NotificationPolicy < ActiveRecord::Base
       policies = communication_channel.notification_policies.all
       Notification.all.each do |notification|
         next if policies.find { |p| p.notification_id == notification.id }
-        Notification.transaction(requires_new: true) do
+        NotificationPolicy.transaction(requires_new: true) do
+          np = nil
           begin
             np = communication_channel.notification_policies.build(notification: notification)
             np.frequency = if communication_channel == communication_channel.user.communication_channel
@@ -193,9 +188,9 @@ class NotificationPolicy < ActiveRecord::Base
             np = nil
             raise ActiveRecord::Rollback
           end
+          np ||= communication_channel.notification_policies.where(notification_id: notification).first
+          policies << np
         end
-        np ||= communication_channel.notification_policies.where(notification_id: notification).first
-        policies << np
       end
       policies
     end

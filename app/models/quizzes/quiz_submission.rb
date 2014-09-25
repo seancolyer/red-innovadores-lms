@@ -17,11 +17,24 @@
 #
 
 class Quizzes::QuizSubmission < ActiveRecord::Base
-  self.table_name = 'quiz_submissions' unless CANVAS_RAILS2
+  self.table_name = 'quiz_submissions'
+
+  def self.polymorphic_names
+    [self.name, "QuizSubmission"]
+  end
 
   include Workflow
-  attr_accessible :quiz, :user, :temporary_user_code, :submission_data, :score_before_regrade
+  attr_accessible :quiz, :user, :temporary_user_code, :submission_data, :score_before_regrade, :has_seen_results
   attr_readonly :quiz_id, :user_id
+
+  EXPORTABLE_ATTRIBUTES = [
+    :id, :quiz_id, :quiz_version, :user_id, :submission_data, :submission_id, :score, :kept_score, :quiz_data, :started_at, :end_at, :finished_at, :attempt, :workflow_state,
+    :created_at, :updated_at, :fudge_points, :quiz_points_possible, :extra_attempts, :temporary_user_code, :extra_time, :manually_unlocked, :manually_scored, :score_before_regrade, :was_preview,
+    :has_seen_results
+  ]
+
+  EXPORTABLE_ASSOCIATIONS = [:quiz, :user, :submission, :attachments]
+
   validates_presence_of :quiz_id
   validates_numericality_of :extra_time, greater_than_or_equal_to: 0,
     less_than_or_equal_to: 10080, # one week
@@ -43,23 +56,7 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
   after_save :context_module_action
   before_create :assign_validation_token
 
-  has_many :attachments, :as => :context, :dependent => :destroy do
-    if CANVAS_RAILS2
-      def construct_sql
-        @finder_sql = @counter_sql =
-          "#{@reflection.quoted_table_name}.#{@reflection.options[:as]}_id = #{owner_quoted_id} AND " +
-        "#{@reflection.quoted_table_name}.#{@reflection.options[:as]}_type IN ('QuizSubmission', #{@owner.class.quote_value(@owner.class.base_class.name.to_s)})"
-      end
-    else
-      def where(*args)
-        if args.length == 1 && args.first.is_a?(Arel::Nodes::Equality) && args.first.left.name == 'context_type'
-          super(args.first.left.in(['QuizSubmission', 'Quizzes::QuizSubmission']))
-        else
-          super
-        end
-      end
-    end
-  end
+  has_many :attachments, :as => :context, :dependent => :destroy
 
   # update the QuizSubmission's Submission to 'graded' when the QuizSubmission is marked as 'complete.' this
   # ensures that quiz submissions with essay questions don't show as graded in the SpeedGrader until the instructor
@@ -72,29 +69,6 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
   serialize :submission_data
 
   simply_versioned :automatic => false
-
-  has_many :versions,
-    :order => 'number DESC',
-    :as => :versionable,
-    :dependent => :destroy,
-    :inverse_of => :versionable,
-    :extend => SoftwareHeretics::ActiveRecord::SimplyVersioned::VersionsProxyMethods do
-      if CANVAS_RAILS2
-        def construct_sql
-          @finder_sql = @counter_sql =
-            "#{@reflection.quoted_table_name}.#{@reflection.options[:as]}_id = #{owner_quoted_id} AND " +
-          "#{@reflection.quoted_table_name}.#{@reflection.options[:as]}_type IN ('QuizSubmission', #{@owner.class.quote_value(@owner.class.base_class.name.to_s)})"
-        end
-      else
-        def where(*args)
-          if args.length == 1 && args.first.is_a?(Arel::Nodes::Equality) && args.first.left.name == 'versionable_type'
-            super(args.first.left.in(['QuizSubmission', 'Quizzes::QuizSubmission']))
-          else
-            super
-          end
-        end
-      end
-    end
 
   workflow do
     state :untaken do
@@ -127,11 +101,8 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
             self.quiz.context.observer_enrollments.find_by_user_id_and_associated_user_id_and_workflow_state(user.id, self.user_id, 'active') }
     can :read
 
-    given {|user, session| quiz.cached_context_grants_right?(user, session, :manage_grades) }
-    can :update_scores
-
-    given {|user, session| quiz.cached_context_grants_right?(user, session, :manage_grades) }
-    can :add_attempts
+    given {|user, session| quiz.context.grants_right?(user, session, :manage_grades) }
+    can :update_scores and can :add_attempts
   end
 
   # override has_one relationship provided by simply_versioned
@@ -229,12 +200,13 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
   def results_visible?
     return true unless quiz
     return false if quiz.restrict_answers_for_concluded_course?
+    return false if quiz.one_time_results && self.has_seen_results?
 
     if quiz.hide_results == 'always'
       false
     elsif quiz.hide_results == 'until_after_last_attempt'
       # Visible if quiz has unlimited attempts (no way to get to last
-      # attempts), if this attempt it higher than the allowed attempts
+      # attempts), if this attempt is higher than the allowed attempts
       # (once you get into extra attempts), or if this attempt is
       # the last attempt and has been taken (checking for completion
       # prevents the student from starting to take the quiz for the last
@@ -258,13 +230,17 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
     end
   end
 
+  def has_seen_results?
+    !!self.has_seen_results
+  end
+
   def finished_in_words
     extend ActionView::Helpers::DateHelper
     started_at && finished_at && time_ago_in_words(Time.now - (finished_at - started_at))
   end
 
   def points_possible_at_submission_time
-    self.questions_as_object.map { |q| q[:points_possible].to_i }.compact.sum || 0
+    self.questions_as_object.map { |q| q[:points_possible].to_f }.compact.sum || 0
   end
 
   def questions
@@ -377,7 +353,7 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
       @assignment_submission.submitted_at = self.finished_at
       @assignment_submission.grade_matches_current_submission = true
       @assignment_submission.quiz_submission_id = self.id
-      @assignment_submission.graded_at = self.end_at || Time.now
+      @assignment_submission.graded_at = [self.end_at, Time.zone.now].compact.min
       @assignment_submission.grader_id = "-#{self.quiz_id}".to_i
       @assignment_submission.body = "user: #{self.user_id}, quiz: #{self.quiz_id}, score: #{self.score}, time: #{Time.now.to_s}"
       @assignment_submission.user_id = self.user_id
@@ -518,7 +494,10 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
   end
 
   def mark_completed
-    Quizzes::QuizSubmission.where(:id => self).update_all(:workflow_state => 'complete')
+    Quizzes::QuizSubmission.where(:id => self).update_all({
+      workflow_state: 'complete',
+      has_seen_results: false
+    })
   end
 
   def grade_submission(opts={})
@@ -671,9 +650,19 @@ class Quizzes::QuizSubmission < ActiveRecord::Base
     date ? where("quiz_submissions.updated_at>?", date) : scoped
   }
   scope :for_user_ids, lambda { |user_ids| where(:user_id => user_ids) }
-  scope :logged_out, where("temporary_user_code is not null")
-  scope :not_settings_only, where("quiz_submissions.workflow_state<>'settings_only'")
-  scope :completed, where(:workflow_state => %w(complete pending_review))
+  scope :logged_out, -> { where("temporary_user_code is not null AND NOT was_preview") }
+  scope :not_settings_only, -> { where("quiz_submissions.workflow_state<>'settings_only'") }
+  scope :completed, -> { where(:workflow_state => %w(complete pending_review)) }
+
+  # Excludes teacher preview submissions.
+  #
+  # You may still have to deal with StudentView submissions if you want
+  # submissions made by students for real, which you can do by using the
+  # for_user_ids scope and pass in quiz.context.all_real_student_ids.
+  scope :not_preview, -> { where('was_preview IS NULL OR NOT was_preview') }
+
+  # Excludes teacher preview and Student View submissions.
+  scope :for_students, ->(quiz) { not_preview.for_user_ids(quiz.context.all_real_student_ids) }
 
   has_a_broadcast_policy
 

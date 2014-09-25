@@ -18,16 +18,16 @@
 require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 
 describe "Feature Flags API", type: :request do
-  let(:t_site_admin) { Account.site_admin }
-  let(:t_root_account) { account_model }
-  let(:t_teacher) { user_with_pseudonym account: t_root_account }
-  let(:t_sub_account) { account_model parent_account: t_root_account }
-  let(:t_course) { course_with_teacher(user: t_teacher, account: t_sub_account, active_all: true).course }
-  let(:t_root_admin) { account_admin_user account: t_root_account }
+  let_once(:t_site_admin) { Account.site_admin }
+  let_once(:t_root_account) { account_model }
+  let_once(:t_teacher) { user_with_pseudonym account: t_root_account }
+  let_once(:t_sub_account) { account_model parent_account: t_root_account }
+  let_once(:t_course) { course_with_teacher(user: t_teacher, account: t_sub_account, active_all: true).course }
+  let_once(:t_root_admin) { account_admin_user account: t_root_account }
 
   before do
     Feature.stubs(:definitions).returns({
-      'root_account_feature' => Feature.new(feature: 'root_account_feature', applies_to: 'RootAccount', state: 'off'),
+      'root_account_feature' => Feature.new(feature: 'root_account_feature', applies_to: 'RootAccount', state: 'allowed'),
       'account_feature' => Feature.new(feature: 'account_feature', applies_to: 'Account', state: 'on', display_name: lambda { "Account Feature FRD" }, description: lambda { "FRD!!" }, beta: true),
       'course_feature' => Feature.new(feature: 'course_feature', applies_to: 'Course', state: 'allowed', development: true, release_notes_url: 'http://example.com', display_name: "not localized", description: "srsly"),
       'user_feature' => Feature.new(feature: 'user_feature', applies_to: 'User', state: 'allowed'),
@@ -74,11 +74,15 @@ describe "Feature Flags API", type: :request do
                 "transitions"=>{"allowed"=>{"locked"=>false}, "off"=>{"locked"=>false}}}},
           {"feature"=>"root_account_feature",
            "applies_to"=>"RootAccount",
+           "root_opt_in"=>true,
            "feature_flag"=>
-               {"feature"=>"root_account_feature",
+               {"context_id"=>t_root_account.id,
+                "context_type"=>"Account",
+                "locking_account_id"=>nil,
+                "feature"=>"root_account_feature",
                 "state"=>"off",
-                "locked"=>true,
-                "transitions"=>{"allowed"=>{"locked"=>false}, "on"=>{"locked"=>false}}}},
+                "locked"=>false,
+                "transitions"=>{"allowed"=>{"locked"=>true}, "on"=>{"locked"=>false}}}},
           {"feature"=>"root_opt_in_feature",
            "applies_to"=>"Course",
            "root_opt_in"=>true,
@@ -268,6 +272,24 @@ describe "Feature Flags API", type: :request do
       flag.should_not be_new_record
     end
 
+    it "should disallow 'allowed' setting for RootAccount features on (non-site-admin) root accounts" do
+      t_root_account.disable_feature! :root_account_feature
+      api_call_as_user(t_root_admin, :put, "/api/v1/accounts/#{t_root_account.id}/features/flags/root_account_feature?state=allowed",
+                       { controller: 'feature_flags', action: 'update', format: 'json', account_id: t_root_account.to_param, feature: 'root_account_feature', state: 'allowed' },
+                       {}, {}, { expected_status: 403 })
+    end
+
+    it "should clear the context's feature flag cache before deciding to insert or update" do
+      cache_key = t_root_account.feature_flag_cache_key('course_feature')
+      enable_cache do
+        flag = t_root_account.feature_flags.create! feature: 'course_feature', state: 'on'
+        # try to trick the controller into inserting (and violating a unique constraint) instead of updating
+        Rails.cache.write(cache_key, :nil)
+        api_call_as_user(t_root_admin, :put, "/api/v1/accounts/#{t_root_account.id}/features/flags/course_feature?state=off",
+                         { controller: 'feature_flags', action: 'update', format: 'json', account_id: t_root_account.to_param, feature: 'course_feature', state: 'off' })
+      end
+    end
+
     describe "locking_account_id" do
       it "should require admin rights in the locking account to lock a flag" do
         api_call_as_user(t_teacher, :put, "/api/v1/courses/#{t_course.id}/features/flags/course_feature?state=on&locking_account_id=#{t_root_account.id}",
@@ -332,7 +354,7 @@ describe "Feature Flags API", type: :request do
       end
 
       context "AccountManager" do
-        before do
+        before :once do
           t_site_admin.role_overrides.create!(permission: 'manage_feature_flags',
                                               enrollment_type: 'AccountManager',
                                               enabled: true,

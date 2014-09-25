@@ -42,7 +42,7 @@ class AssignmentsController < ApplicationController
       # because of course import/copy.
       @context.require_assignment_group
 
-      permissions = @context.grants_rights?(@current_user, :manage_assignments, :manage_grades)
+      permissions = @context.rights_status(@current_user, :manage_assignments, :manage_grades)
       permissions[:manage] = permissions[:manage_assignments]
       js_env({
         :URLS => {
@@ -107,12 +107,20 @@ class AssignmentsController < ApplicationController
       return
     end
     if authorized_action(@assignment, @current_user, :read)
+
+      if @context.feature_enabled?(:differentiated_assignments) && @current_user && @assignment && !@assignment.visible_to_user?(@current_user)
+        respond_to do |format|
+          flash[:error] = t 'notices.assignment_not_availible', "The assignment you requested is not availible to your course section."
+          format.html { redirect_to named_context_url(@context, :context_assignments_url) }
+        end
+        return
+      end
+
       @assignment = AssignmentOverrideApplicator.assignment_overridden_for(@assignment, @current_user)
       @assignment.ensure_assignment_group
 
       if @assignment.submission_types.include?("online_upload") || @assignment.submission_types.include?("online_url")
-        @external_tools = ContextExternalTool.all_tools_for(@context, :user => @current_user)
-          .select(&:has_homework_submission)
+        @external_tools = ContextExternalTool.all_tools_for(@context, :user => @current_user, :type => :homework_submission)
       else
         @external_tools = []
       end
@@ -127,7 +135,7 @@ class AssignmentsController < ApplicationController
 
       @locked = @assignment.locked_for?(@current_user, :check_policies => true, :deep_check_if_needed => true)
       @locked.delete(:lock_at) if @locked.is_a?(Hash) && @locked.has_key?(:unlock_at) # removed to allow proper translation on show page
-      @unlocked = !@locked || @assignment.grants_rights?(@current_user, session, :update)[:update]
+      @unlocked = !@locked || @assignment.grants_right?(@current_user, session, :update)
       @assignment.context_module_action(@current_user, :read) if @unlocked && !@assignment.new_record?
 
       if @assignment.grants_right?(@current_user, session, :grade)
@@ -390,8 +398,11 @@ class AssignmentsController < ApplicationController
           {:id => section.id, :name => section.name }
         }),
         :ASSIGNMENT_OVERRIDES =>
-          (assignment_overrides_json(@assignment.overrides_visible_to(@current_user))),
+          (assignment_overrides_json(
+            @assignment.overrides_for(@current_user)
+            )),
         :ASSIGNMENT_INDEX_URL => polymorphic_url([@context, :assignments]),
+        :DIFFERENTIATED_ASSIGNMENTS_ENABLED => @context.feature_enabled?(:differentiated_assignments)
       }
 
       hash[:ASSIGNMENT] = assignment_json(@assignment, @current_user, session, override_dates: false)
@@ -458,8 +469,8 @@ class AssignmentsController < ApplicationController
   # Delete the given assignment.
   #
   # @example_request
-  #     curl https://<canvas>/api/v1/courses/<course_id>/assignments/<assignment_id> \ 
-  #          -X DELETE \ 
+  #     curl https://<canvas>/api/v1/courses/<course_id>/assignments/<assignment_id> \
+  #          -X DELETE \
   #          -H 'Authorization: Bearer <token>'
   # @returns Assignment
   def destroy

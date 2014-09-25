@@ -22,8 +22,17 @@ class MediaObject < ActiveRecord::Base
   include Workflow
   belongs_to :user
   belongs_to :context, :polymorphic => true
+  validates_inclusion_of :context_type, :allow_nil => true, :in => ['Course', 'User', 'Group', 'ConversationMessage',
+    'Account', 'Assignment', 'AssessmentQuestion', 'ContextMessage', 'ZipFileImport']
   belongs_to :attachment
   belongs_to :root_account, :class_name => 'Account'
+
+  EXPORTABLE_ATTRIBUTES = [
+    :id, :user_id, :context_id, :context_type, :workflow_state, :user_type, :title, :user_entered_title, :media_id, :media_type, :duration, :max_size, :root_account_id,
+    :data, :created_at, :updated_at, :attachment_id, :total_size
+  ]
+  EXPORTABLE_ASSOCIATIONS = [:user, :context, :attachment, :root_account, :media_tracks]
+
   validates_presence_of :media_id, :workflow_state
   has_many :media_tracks, :dependent => :destroy, :order => 'locale'
   after_create :retrieve_details_later
@@ -53,7 +62,7 @@ class MediaObject < ActiveRecord::Base
 
 
   set_policy do
-    given { |user| (self.user && self.user == user) || (self.context && self.context.grants_right?(user, nil, :manage_content)) }
+    given { |user| (self.user && self.user == user) || (self.context && self.context.grants_right?(user, :manage_content)) }
     can :add_captions and can :delete_captions
   end
 
@@ -154,7 +163,8 @@ class MediaObject < ActiveRecord::Base
         attachment_id = partner_data[:attachment_id] if partner_data[:attachment_id].present?
       end
       attachment = Attachment.find_by_id(attachment_id) if attachment_id
-      mo = MediaObject.find_or_initialize_by_media_id(entry[:entryId])
+      account = root_account || Account.default
+      mo = account.shard.activate { MediaObject.find_or_initialize_by_media_id(entry[:entryId]) }
       mo.root_account ||= root_account || Account.default
       mo.title ||= entry[:name]
       if attachment
@@ -228,7 +238,7 @@ class MediaObject < ActiveRecord::Base
   def media_sources
     CanvasKaltura::ClientV3.new.media_sources(self.media_id)
   end
-  
+
   def retrieve_details_ensure_codecs(attempt=0)
     retrieve_details
     if (!self.data || !self.data[:extensions] || !self.data[:extensions][:flv]) && self.created_at > 6.hours.ago
@@ -326,7 +336,7 @@ class MediaObject < ActiveRecord::Base
     save!
   end
 
-  scope :active, where("media_objects.workflow_state<>'deleted'")
+  scope :active, -> { where("media_objects.workflow_state<>'deleted'") }
 
   scope :by_media_id, lambda { |media_id| where("media_objects.media_id=? OR media_objects.old_media_id=?", media_id, media_id) }
 

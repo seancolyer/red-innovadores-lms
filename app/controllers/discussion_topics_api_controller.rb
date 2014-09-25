@@ -108,7 +108,7 @@ class DiscussionTopicsApiController < ApplicationController
 
       participants = Shard.partition_by_shard(participant_ids) do |shard_ids|
         User.find(shard_ids)
-        end
+      end
 
       participant_info = participants.map do |participant|
         user_display_json(participant, @context.is_a_context? && @context)
@@ -554,8 +554,8 @@ class DiscussionTopicsApiController < ApplicationController
   def visible_topics(topic)
     # conflate entries from all child topics for groups the user can access
     topics = [topic]
-    if topic.for_group_assignment? && !topic.child_topics.empty?
-      groups = topic.assignment.group_category.groups.active.select do |group|
+    if topic.for_group_discussion? && !topic.child_topics.empty?
+      groups = topic.group_category.groups.active.select do |group|
         group.grants_right?(@current_user, session, :read)
       end
       topic.child_topics.each{ |t| topics << t if groups.include?(t.context) }

@@ -30,6 +30,7 @@ define [
   'jst/gradebook2/group_total_cell'
   'jst/gradebook2/row_student_name'
   'compiled/views/gradebook/SectionMenuView'
+  'compiled/gradebook2/GradebookKeyboardNav'
   'jst/_avatar' #needed by row_student_name
   'jquery.ajaxJSON'
   'jquery.instructure_date_and_time'
@@ -42,7 +43,7 @@ define [
   'jqueryui/sortable'
   'compiled/jquery.kylemenu'
   'compiled/jquery/fixDialogButtons'
-], (LongTextEditor, KeyboardNavDialog, keyboardNavTemplate, Slick, TotalColumnHeaderView, round, InputFilterView, I18n, GRADEBOOK_TRANSLATIONS, $, _, Backbone, tz, GradeCalculator, userSettings, Spinner, SubmissionDetailsDialog, AssignmentGroupWeightsDialog, GradeDisplayWarningDialog, SubmissionCell, GradebookHeaderMenu, numberCompare, htmlEscape, UploadDialog, PostGradesDialog, PostGradesModel, columnHeaderTemplate, groupTotalCellTemplate, rowStudentNameTemplate, SectionMenuView) ->
+], (LongTextEditor, KeyboardNavDialog, keyboardNavTemplate, Slick, TotalColumnHeaderView, round, InputFilterView, I18n, GRADEBOOK_TRANSLATIONS, $, _, Backbone, tz, GradeCalculator, userSettings, Spinner, SubmissionDetailsDialog, AssignmentGroupWeightsDialog, GradeDisplayWarningDialog, SubmissionCell, GradebookHeaderMenu, numberCompare, htmlEscape, UploadDialog, PostGradesDialog, PostGradesModel, columnHeaderTemplate, groupTotalCellTemplate, rowStudentNameTemplate, SectionMenuView, GradebookKeyboardNav) ->
 
   class Gradebook
     columnWidths =
@@ -60,8 +61,6 @@ define [
 
     DISPLAY_PRECISION = 2
 
-    numberOfFrozenCols: 2
-
     hasSections: $.Deferred()
     allSubmissionsLoaded: $.Deferred()
 
@@ -78,6 +77,8 @@ define [
       @userFilterRemovedRows = []
       @show_concluded_enrollments = userSettings.contextGet 'show_concluded_enrollments'
       @show_concluded_enrollments = true if @options.course_is_concluded
+      @totalColumnInFront = userSettings.contextGet 'total_column_in_front'
+      @numberOfFrozenCols = if @totalColumnInFront then 3 else 2
 
       $.subscribe 'assignment_group_weights_changed', @handleAssignmentGroupWeightChange
       $.subscribe 'assignment_muting_toggled',        @handleAssignmentMutingChange
@@ -130,8 +131,20 @@ define [
         for c in @customColumns
           url = @options.custom_column_data_url.replace /:id/, c.id
           @getCustomColumnData(c.id)
+        @assignment_visibility() if ENV.GRADEBOOK_OPTIONS.differentiated_assignments_enabled
 
       @showCustomColumnDropdownOption()
+
+    assignment_visibility: ->
+      all_students_ids = _.keys @students
+      for assignment_id, a of @assignments
+        if a.only_visible_to_overrides
+          hidden_student_ids = @hiddenStudentIdsForAssignment(all_students_ids, a)
+          for student_id in hidden_student_ids
+            @updateSubmission { assignment_id: assignment_id, user_id: student_id, hidden: true }
+
+    hiddenStudentIdsForAssignment: (student_ids, assignment) ->
+      _.difference student_ids, assignment.assignment_visibility.map(String)
 
     onShow: ->
       return if @startedInitializing
@@ -168,11 +181,24 @@ define [
 
 
     initPostGrades: () ->
-      postGradesModel = new PostGradesModel({gradebook: ENV.GRADEBOOK_OPTIONS, assignments: @assignments, section_id: @sectionToShow})
-      postGradesDialog = new PostGradesDialog(postGradesModel)
 
-      $("#publish").click (event) =>
+      $("#post-grades-button").click (event) =>
         event.preventDefault()
+
+        pg = {
+          assignments: @assignments
+          course_id: ENV.GRADEBOOK_OPTIONS.context_id
+        }
+        if @sectionToShow
+          pg.integration_section_id = @sections[@sectionToShow].integration_id
+        else
+          pg.integration_course_id = ENV.GRADEBOOK_OPTIONS.context_integration_id
+
+        postGradesModel = new PostGradesModel(pg)
+
+        postGradesDialog = new PostGradesDialog(postGradesModel,
+          ENV.GRADEBOOK_OPTIONS.sis_app_url,
+          ENV.GRADEBOOK_OPTIONS.sis_app_token)
         postGradesModel.reset_ignored_assignments()
         postGradesDialog.render().show()
         open = $('#post-grades-container').dialog('isOpen')
@@ -201,13 +227,12 @@ define [
           assignment.due_at = tz.parse(assignment.due_at)
           @assignments[assignment.id] = assignment
 
-      @initPostGrades()
-
     gotSections: (sections) =>
       @sections = {}
       for section in sections
         htmlEscape(section)
         @sections[section.id] = section
+      @displayPostGradesButton(@sectionToShow)
       @sections_enabled = sections.length > 1
       @hasSections.resolve()
 
@@ -225,7 +250,7 @@ define [
 
     gotAllStudents: ->
       @withAllStudents (students) =>
-        for id, student of students
+        for student_id, student of students
           student.computed_current_score ||= 0
           student.computed_final_score ||= 0
           student.secondary_identifier = student.sis_login_id || student.login_id
@@ -242,12 +267,18 @@ define [
 
           # fill in dummy submissions, so there's something there even if the
           # student didn't submit anything for that assignment
-          for id, assignment of @assignments
-            student["assignment_#{id}"] ||= { assignment_id: id, user_id: student.id }
+          for assignment_id, assignment of @assignments
+            student["assignment_#{assignment_id}"] ||= { assignment_id: assignment_id, user_id: student_id }
 
           @rows.push(student)
 
     defaultSortType: 'assignment_group'
+
+    studentsThatCanSeeAssignment: (potential_students, assignment) =>
+      if ENV.GRADEBOOK_OPTIONS.differentiated_assignments_enabled
+        _.pick potential_students, assignment.assignment_visibility...
+      else
+        potential_students
 
     getStoredSortOrder: =>
       userSettings.contextGet('sort_grade_columns_by') || { sortType: @defaultSortType }
@@ -382,7 +413,14 @@ define [
         showingPoints: @displayPointTotals
         toggleShowingPoints: @togglePointsOrPercentTotals.bind(this)
         weightedGroups: @weightedGroups
+        totalColumnInFront: @totalColumnInFront
+        moveTotalColumn: @moveTotalColumn.bind(this)
       @totalHeader.render()
+
+    moveTotalColumn: =>
+      @totalColumnInFront = not @totalColumnInFront
+      userSettings.contextSet 'total_column_in_front', @totalColumnInFront
+      window.location.reload()
 
     assignmentGroupHtml: (group_name, group_weight) =>
       escaped_group_name = htmlEscape(group_name)
@@ -432,7 +470,10 @@ define [
     gotSubmissionsChunk: (student_submissions) =>
       for data in student_submissions
         student = @student(data.user_id)
-        @updateSubmission(submission) for submission in data.submissions
+        for submission in data.submissions
+          current_submission = student["assignment_#{submission.assignment_id}"]
+          hidden = current_submission["hidden"] if current_submission?
+          @updateSubmission(submission) unless hidden
         student.loaded = true
         @grid.invalidateRow(student.row)
         @calculateStudentGrade(student)
@@ -488,6 +529,8 @@ define [
     cellFormatter: (row, col, submission) =>
       if !@rows[row].loaded
         @staticCellFormatter(row, col, '')
+      else if submission.hidden
+        @uneditableCellFormatter(row, col)
       else if !submission?
         @staticCellFormatter(row, col, '-')
       else
@@ -502,6 +545,9 @@ define [
 
     staticCellFormatter: (row, col, val) =>
       "<div class='cell-content gradebook-cell'>#{val}</div>"
+
+    uneditableCellFormatter: (row, col) =>
+      "<div class='cell-content gradebook-cell grayed-out'></div>"
 
     groupTotalFormatter: (row, col, val, columnDef, student) =>
       return '' unless val?
@@ -708,6 +754,7 @@ define [
         .delegate '.gradebook-cell-comment', 'click.gradebook', (event) =>
           event.preventDefault()
           data = $(event.currentTarget).data()
+          $(@grid.getActiveCellNode()).removeClass('editable')
           SubmissionDetailsDialog.open @assignments[data.assignmentId], @student(data.userId.toString()), @options
         .delegate '.minimized',
           'mouseenter' : @hoverMinimizedCell,
@@ -726,9 +773,10 @@ define [
           else if columnDef.minimized
             @unminimizeColumn($columnHeader)
 
-      @$grid.on('keydown', @handleKeys)
-
-      @kbDialog = new KeyboardNavDialog().render(keyboardNavTemplate({@keyBindings}))
+      @keyboardNav = new GradebookKeyboardNav(@grid, @$grid)
+      @keyboardNav.init()
+      keyBindings = @keyboardNav.keyBindings
+      @kbDialog = new KeyboardNavDialog().render(keyboardNavTemplate({keyBindings}))
       # when we close a dialog we want to return focus to the grid
       $(document).on('dialogclose', (e) =>
         setTimeout(( =>
@@ -736,87 +784,6 @@ define [
         ), 0)
       )
       $(document).trigger('gridready')
-
-    keyBindings:
-      #   keyCode:
-      #   handler: function
-      #   key: the string representation of the key pressed - for use in the help dialog
-      #   desc: string describing what the shortcut does - for use in the help dialog
-      [
-        {
-        keyCode: 83
-        handler: 'sortOnHeader'
-        key: I18n.t 'keycodes.sort', 's'
-        desc: I18n.t 'keyboard_sort_desc', 'Sort the grid on the current active column'
-        }
-        {
-        keyCode: 77
-        handler: 'showAssignmentMenu'
-        key: I18n.t 'keycodes.menu', 'm'
-        desc: I18n.t 'keyboard_menu_desc', 'Open the menu for active column\'s assignment'
-        }
-         # this one is just for display in the dialog, the menu will take care of itself
-        {
-        keyCode: null
-        key: I18n.t 'keycodes.close_menu', 'esc'
-        desc: I18n.t 'keyboard_close_menu', 'Close the currently active assignment menu'
-        }
-
-        {
-        keyCode: 71
-        handler: 'gotoAssignment'
-        key: I18n.t 'keycodes.goto_assignment', 'g'
-        desc: I18n.t 'keyboard_assignment_desc', 'Go to the current assignment\'s detail page'
-        }
-        {
-        keyCode: 67
-        handler: 'showCommentDialog'
-        key: I18n.t 'keycodes.comment', 'c'
-        desc: I18n.t 'keyboard_comment_desc', 'Comment on the active submission'
-        }
-        {
-        keyCode: 84
-        handler: 'showToolTip'
-        key: I18n.t 'keycodes.tooltip', 't'
-        desc: I18n.t 'keyboard_tooltip_desc', 'Show the submission type of the active submission'
-        }
-      ]
-
-    getHeaderFromActiveCell: =>
-      coords = @grid.getActiveCell()
-      @$grid.find('.slick-header-column').eq(coords.cell)
-
-    showAssignmentMenu: =>
-      @getHeaderFromActiveCell().find('.gradebook-header-drop').click()
-      $('.gradebook-header-menu:visible').focus()
-
-    sortOnHeader: =>
-      @getHeaderFromActiveCell().click()
-
-    gotoAssignment: =>
-      url = @getHeaderFromActiveCell().find('.assignment-name').attr('href')
-      window.location = url
-
-    showCommentDialog: =>
-      $(@grid.getActiveCellNode()).find('.gradebook-cell-comment').click()
-
-    showToolTip: =>
-      node = $(@grid.getActiveCellNode())
-      if node.parent().css('top') == '0px'
-        node.find('div.gradebook-tooltip').addClass('first-row')
-      else
-        node.find('div.gradebook-tooltip').removeClass('first-row')
-      node.toggleClass("hover")
-
-    handleKeys: (e) =>
-      # makes sure the focus sink elements are currently active
-      return unless $(document.activeElement).is('[hidefocus]')
-      modifiers = ['shiftKey', 'altKey', 'ctrlKey']
-      return if _.any(e[mod] for mod in modifiers)
-      b = _.find(@keyBindings, (binding) ->
-        binding.keyCode == e.keyCode
-      )
-      b?.handler and @[b.handler]?(e)
 
     sectionList: ->
       _.map @sections, (section, id) =>
@@ -831,8 +798,26 @@ define [
 
     updateCurrentSection: (section, author) =>
       @sectionToShow = section
+      @displayPostGradesButton(section)
       userSettings[if @sectionToShow then 'contextSet' else 'contextRemove']('grading_show_only_section', @sectionToShow)
       @buildRows() if @grid
+
+    displayPostGradesButton: (section) =>
+      if section?
+        is_integration_section = @sections[section] && @sections[section].integration_id
+      else
+        is_integration_course = ENV.GRADEBOOK_OPTIONS.context_integration_id
+
+      if is_integration_section or is_integration_course
+        @showPostGradesButton()
+      else
+        @hidePostGradesButton()
+
+    hidePostGradesButton: ->
+      $('#post-grades-button').closest('.gradebook-navigation').addClass('hidden')
+
+    showPostGradesButton: ->
+      $('#post-grades-button').closest('.gradebook-navigation').removeClass('hidden')
 
     initHeader: =>
       @drawSectionSelectButton() if @sections_enabled
@@ -871,7 +856,14 @@ define [
       @userFilter = new InputFilterView el: '.gradebook_filter input'
       @userFilter.on 'input', @onUserFilterInput
 
+      @initPostGrades()
+      @setDownloadCsvUrl()
       @renderTotalHeader()
+
+    setDownloadCsvUrl: ->
+      if @show_concluded_enrollments
+        $("#download_csv")[0].href += "?include_priors=true"
+
 
     studentNamesToggle: (e) =>
       e.preventDefault()
@@ -1055,7 +1047,7 @@ define [
         }
 
       total = I18n.t "total", "Total"
-      @aggregateColumns.push
+      total_column =
         id: "total_grade"
         field: "total_grade"
         formatter: @groupTotalFormatter
@@ -1067,9 +1059,12 @@ define [
         minWidth: columnWidths.total.min
         maxWidth: columnWidths.total.max
         width: testWidth("Total", columnWidths.total.min, columnWidths.total.max)
-        cssClass: "total-cell"
+        cssClass: if @totalColumnInFront then 'meta-cell' else 'total-cell'
         sortable: true
         type: 'total_grade'
+
+      (if @totalColumnInFront then @parentColumns else
+        @aggregateColumns).push total_column
 
       $widthTester.remove()
 
@@ -1105,13 +1100,11 @@ define [
             data.sortCol.field
 
           @sortRowsBy (a, b) =>
-            [b, a] = [a, b] if not data.sortAsc
+            [b, a] = [a, b] unless data.sortAsc
             @localeSort(a[sortProp], b[sortProp])
         else
-          @sortRowsBy (a, b) ->
-            aScore = a[data.sortCol.field]?.score
-            bScore = b[data.sortCol.field]?.score
-            numberCompare(aScore, bScore, descending: !data.sortAsc)
+          @sortRowsBy (a, b) =>
+            @gradeSort(a, b, data.sortCol.field, data.sortAsc)
 
       @grid.onKeyDown.subscribe ->
         # TODO: start editing automatically when a number or letter is typed
@@ -1119,7 +1112,13 @@ define [
 
       @grid.onColumnsReordered.subscribe @onColumnsReordered
 
+      @grid.onBeforeEditCell.subscribe @onBeforeEditCell
+
       @onGridInit()
+
+    onBeforeEditCell: (event, {row, cell}) =>
+      $cell = @grid.getCellNode(row, cell)
+      return false if $($cell).find(".gradebook-cell").hasClass("grayed-out")
 
     onCellChange: (event, {item, column}) =>
       if col_id = column.field.match /^custom_col_(\d+)/
@@ -1155,6 +1154,28 @@ define [
       (a || "").localeCompare b || "",
         window.I18n.locale,
         sensitivity: 'accent', numeric: true
+
+    gradeSort: (a, b, field, asc) =>
+      scoreForSorting = (obj) =>
+        percent = (obj) ->
+          if obj[field].possible > 0
+            obj[field].score / obj[field].possible
+          else
+            null
+
+        switch
+          when field == "total_grade"
+            if @options.show_total_grade_as_points
+              obj[field].score
+            else
+              percent(obj)
+          when field.match /^assignment_group/
+            percent(obj)
+          else
+            # TODO: support assignment grading types
+            obj[field].score
+
+      numberCompare(scoreForSorting(a), scoreForSorting(b), descending: !asc)
 
     # show warnings for bad grading setups
     setAssignmentWarnings: =>

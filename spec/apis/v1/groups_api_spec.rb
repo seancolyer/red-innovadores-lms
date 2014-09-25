@@ -20,7 +20,9 @@ require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 require File.expand_path(File.dirname(__FILE__) + '/../file_uploads_spec_helper')
 
 describe "Groups API", type: :request do
-  def group_json(group, is_admin = false)
+  def group_json(group, opts = {})
+    opts[:is_admin] ||= false
+    opts[:include_users] ||= false
     json = {
       'id' => group.id,
       'name' => group.name,
@@ -28,18 +30,36 @@ describe "Groups API", type: :request do
       'is_public' => group.is_public,
       'join_level' => group.join_level,
       'members_count' => group.members_count,
+      'max_membership' => group.max_membership,
       'avatar_url' => group.avatar_attachment && "http://www.example.com/images/thumbnails/#{group.avatar_attachment.id}/#{group.avatar_attachment.uuid}",
       'context_type' => group.context_type,
       "#{group.context_type.downcase}_id" => group.context_id,
       'role' => group.group_category.role,
       'group_category_id' => group.group_category_id,
-      'storage_quota_mb' => group.storage_quota_mb
+      'storage_quota_mb' => group.storage_quota_mb,
+      'leader' => group.leader
     }
-    if group.context_type == 'Account' && is_admin == true
+    if opts[:include_users]
+      json['users'] = users_json(group.users)
+    end
+    if group.context_type == 'Account' && opts[:is_admin]
       json['sis_import_id'] = group.sis_batch_id
       json['sis_group_id'] = group.sis_source_id
     end
     json
+  end
+
+  def users_json(users)
+    users.map { |user| user_json(user) }
+  end
+
+  def user_json(user)
+    {
+      'id' => user.id,
+      'name' => user.name,
+      'sortable_name' => user.sortable_name,
+      'short_name' => user.short_name
+    }
   end
 
   def membership_json(membership, is_admin = false)
@@ -54,7 +74,7 @@ describe "Groups API", type: :request do
     json
   end
 
-  before do
+  before :once do
     @moderator = user_model
     @member = user_with_pseudonym
 
@@ -117,7 +137,7 @@ describe "Groups API", type: :request do
                     @category_path_options.merge(:action => 'context_index',
                                                   :account_id => @account.to_param))
     json.count.should == 1
-    json.first.should == group_json(@community, true)
+    json.first.should == group_json(@community, :is_admin =>true)
 
     json.first['id'].should == @community.id
     json.first['sis_group_id'].should == 'sis'
@@ -132,7 +152,7 @@ describe "Groups API", type: :request do
     response.code.should == '401'
   end
 
-  it "should limit students to their own groups" do
+  it "should show students all groups" do
     course_with_student(:active_all => true)
     @group_1 = @course.groups.create!(:name => 'Group 1')
     @group_2 = @course.groups.create!(:name => 'Group 2')
@@ -141,7 +161,7 @@ describe "Groups API", type: :request do
     json = api_call(:get, "/api/v1/courses/#{@course.to_param}/groups.json",
                     @category_path_options.merge(:action => 'context_index',
                                                   :course_id => @course.to_param))
-    json.count.should == 1
+    json.count.should == 2
     json.first['id'].should == @group_1.id
   end
 
@@ -149,6 +169,12 @@ describe "Groups API", type: :request do
     @user = @member
     json = api_call(:get, @community_path, @category_path_options.merge(:group_id => @community.to_param, :action => "show"))
     json.should == group_json(@community)
+  end
+
+  it "should include the group category" do
+    @user = @member
+    json = api_call(:get, "#{@community_path}.json?include[]=group_category", @category_path_options.merge(:group_id => @community.to_param, :action => "show", :include => [ "group_category" ]))
+    json.has_key?("group_category").should be_true
   end
 
   it 'should include permissions' do
@@ -184,7 +210,7 @@ describe "Groups API", type: :request do
     })
     @community2 = Group.order(:id).last
     @community2.group_category.should be_communities
-    json.should == group_json(@community2)
+    json.should == group_json(@community2, :include_users => true)
   end
 
   it "should allow a teacher to create a group in a course" do
@@ -286,15 +312,14 @@ describe "Groups API", type: :request do
   end
 
   describe "quota" do
-    before do
+    before :once do
       @account = Account.default
       Setting.set('group_default_quota', 11.megabytes)
     end
 
     context "with manage_storage_quotas permission" do
-      before do
+      before :once do
         account_admin_user :account => @account
-        user_session(@admin)
       end
 
       it "should set the quota on create" do
@@ -313,9 +338,8 @@ describe "Groups API", type: :request do
     end
 
     context "without manage_storage_quotas permission" do
-      before do
+      before :once do
         account_admin_user_with_role_changes(:role_changes => {:manage_storage_quotas => false})
-        user_session(@admin)
       end
 
       it "should ignore the quota on create" do
@@ -679,6 +703,19 @@ describe "Groups API", type: :request do
         @community.users.map(&:id).should include(user['id'])
       end
     end
+
+    it "honors the include[avatar_url] query parameter flag" do
+      account = @community.context
+      account.set_service_availability(:avatars, true)
+      account.save!
+
+      user = @community.users.first
+      user.avatar_image_url = "http://expected_avatar_url"
+      user.save!
+
+      json = api_call(:get, api_url + "?include[]=avatar_url", api_route.merge(include: ["avatar_url"]))
+      json.first['avatar_url'].should == user.avatar_image_url
+    end
   end
 
   context "group files" do
@@ -727,7 +764,7 @@ describe "Groups API", type: :request do
   end
 
   describe "/preview_html" do
-    before do
+    before :once do
       course_with_teacher_logged_in(:active_all => true)
       @group = @course.groups.create!(:name => 'Group 1')
     end

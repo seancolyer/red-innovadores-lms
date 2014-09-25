@@ -1,4 +1,4 @@
-require File.expand_path(File.dirname(__FILE__) + '/common')
+﻿require File.expand_path(File.dirname(__FILE__) + '/common')
 require File.expand_path(File.dirname(__FILE__) + '/helpers/calendar2_common')
 
 describe "calendar2" do
@@ -99,7 +99,7 @@ describe "calendar2" do
       # also make sure the redirect from calendar -> calendar2 keeps the param
       unrelated_course = Course.create!(:account => Account.default, :name => "unrelated course")
       # make the user an admin so they can view the course's calendar without an enrollment
-      Account.default.add_user(@user)
+      Account.default.account_users.create!(user: @user)
       CalendarEvent.create!(:title => "from unrelated one", :start_at => Time.now, :end_at => 5.hours.from_now) { |c| c.context = unrelated_course }
       keep_trying_until { CalendarEvent.last.title.should == "from unrelated one" }
       get "/courses/#{unrelated_course.id}/settings"
@@ -272,10 +272,10 @@ describe "calendar2" do
           if (fj('.view_event_link').displayed?)
             expect_new_page_load { driver.execute_script("$('.view_event_link').hover().click()") }
           end
-          fj('h2.title').displayed?
+          fj('h1.title').displayed?
         end
 
-        f('h2.title').text.should include(name)
+        f('h1.title').text.should include(name)
       end
 
       it "more options link on assignments should go to assignment edit page" do

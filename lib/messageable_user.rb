@@ -17,7 +17,7 @@
 #
 
 class MessageableUser < User
-  COLUMNS = ['id', 'short_name', 'name', 'avatar_image_url', 'avatar_image_source'].map{ |col| "users.#{col}" }
+  COLUMNS = ['id', 'name', 'avatar_image_url', 'avatar_image_source'].map{ |col| "users.#{col}" }
   SELECT = COLUMNS.join(", ")
   AVAILABLE_CONDITIONS = "users.workflow_state IN ('registered', 'pre_registered')"
 
@@ -27,6 +27,8 @@ class MessageableUser < User
       :common_group_column => nil,
       :common_role_column => nil
     }.merge(options)
+
+    bookmark_sql = User.sortable_name_order_by_clause
 
     common_course_sql =
       if options[:common_role_column]
@@ -47,7 +49,7 @@ class MessageableUser < User
         'NULL'
       end
 
-    "#{SELECT}, #{common_course_sql} AS common_courses, #{common_group_sql} AS common_groups"
+    "#{SELECT}, #{bookmark_sql} AS bookmark, #{common_course_sql} AS common_courses, #{common_group_sql} AS common_groups"
   end
 
   def self.prepped(options={})
@@ -72,7 +74,7 @@ class MessageableUser < User
     scope = self.
       select(MessageableUser.build_select(options)).
       group(MessageableUser.connection.group_by(*columns)).
-      order("LOWER(COALESCE(users.short_name, users.name)), users.id")
+      order(User.sortable_name_order_by_clause + ", users.id")
 
     if options[:strict_checks]
       scope.where(AVAILABLE_CONDITIONS)
@@ -143,15 +145,17 @@ class MessageableUser < User
       end
     end
   end
-  if CANVAS_RAILS2
-    alias_method :after_find, :populate_common_contexts
-  else
-    after_find :populate_common_contexts
-  end
+  after_find :populate_common_contexts
 
   def include_common_contexts_from(other)
     combine_common_contexts(self.global_common_courses, other.global_common_courses)
     combine_common_contexts(self.global_common_groups, other.global_common_groups)
+  end
+
+  def serializable_hash(options={})
+    options[:except] ||= []
+    options[:except] << :bookmark
+    super(options)
   end
 
   private
@@ -182,7 +186,7 @@ class MessageableUser < User
   # interpretation: local to Shard.current.
   class MessageableUser::Bookmarker
     def self.bookmark_for(user)
-      [(user.short_name || user.name).downcase, user.id]
+      [user.bookmark, user.id]
     end
 
     def self.validate(bookmark)
@@ -196,19 +200,22 @@ class MessageableUser < User
     def self.restrict_scope(scope, pager)
       if pager.current_bookmark
         name, id = pager.current_bookmark
+        if MessageableUser.connection.adapter_name == 'PostgreSQL'
+          name = MessageableUser.connection.escape_bytea(name)
+        end
         scope_shard = scope.shard_value
         id = Shard.relative_id_for(id, Shard.current, scope_shard) if scope_shard
 
         condition = [
           <<-SQL,
-            LOWER(COALESCE(users.short_name, users.name)) > ? OR
-            LOWER(COALESCE(users.short_name, users.name)) = ? AND users.id > ?
+            #{User.sortable_name_order_by_clause} > ? OR
+            #{User.sortable_name_order_by_clause} = ? AND users.id > ?
           SQL
           name, name, id
         ]
 
         if pager.include_bookmark
-          condition[0] << "OR LOWER(COALESCE(users.short_name, users.name)) = ? AND users.id = ?"
+          condition[0] << "OR #{User.sortable_name_order_by_clause} = ? AND users.id = ?"
           condition.concat([name, id])
         end
 

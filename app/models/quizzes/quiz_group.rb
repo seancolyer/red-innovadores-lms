@@ -17,7 +17,7 @@
 #
 
 class Quizzes::QuizGroup < ActiveRecord::Base
-  self.table_name = 'quiz_groups' unless CANVAS_RAILS2
+  self.table_name = 'quiz_groups'
 
   attr_accessible :name, :pick_count, :question_points, :assessment_question_bank_id
   attr_readonly :quiz_id
@@ -25,6 +25,9 @@ class Quizzes::QuizGroup < ActiveRecord::Base
   belongs_to :quiz, class_name: 'Quizzes::Quiz'
   belongs_to :assessment_question_bank
   has_many :quiz_questions, :class_name => 'Quizzes::QuizQuestion', :dependent => :destroy
+
+  EXPORTABLE_ATTRIBUTES = [:id, :quiz_id, :name, :pick_count, :question_points, :position, :created_at, :updated_at, :assessment_question_bank_id]
+  EXPORTABLE_ASSOCIATIONS = [:quiz, :assessment_question_bank, :quiz_questions]
 
   validates_presence_of :quiz_id
   validates_length_of :name, maximum: maximum_string_length, allow_nil: true

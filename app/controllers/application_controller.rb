@@ -21,11 +21,7 @@
 
 class ApplicationController < ActionController::Base
   def self.promote_view_path(path)
-    if CANVAS_RAILS2
-      self.view_paths.delete path
-    else
-      self.view_paths = self.view_paths.to_ary.reject{ |p| p.to_s == path }
-    end
+    self.view_paths = self.view_paths.to_ary.reject{ |p| p.to_s == path }
     prepend_view_path(path)
   end
 
@@ -36,6 +32,7 @@ class ApplicationController < ActionController::Base
   include LocaleSelection
   include Api::V1::User
   include Api::V1::WikiPage
+  include Lti::MessageHelper
   around_filter :set_locale
 
   helper :all
@@ -121,11 +118,23 @@ class ApplicationController < ActionController::Base
     end
     @js_env[:IS_LARGE_ROSTER] = true if !@js_env[:IS_LARGE_ROSTER] && @context.respond_to?(:large_roster?) && @context.large_roster?
     @js_env[:context_asset_string] = @context.try(:asset_string) if !@js_env[:context_asset_string]
+    @js_env[:ping_url] = polymorphic_url([:api_v1, @context, :ping]) if @context.is_a?(Course)
     @js_env[:TIMEZONE] = Time.zone.tzinfo.identifier if !@js_env[:TIMEZONE]
+    @js_env[:CONTEXT_TIMEZONE] = @context.time_zone.tzinfo.identifier if !@js_env[:CONTEXT_TIMEZONE] && @context.respond_to?(:time_zone) && @context.time_zone.present?
     @js_env[:LOCALE] = I18n.qualified_locale if !@js_env[:LOCALE]
     @js_env
   end
   helper_method :js_env
+
+  def k12?
+    @domain_root_account && @domain_root_account.feature_enabled?('k12')
+  end
+  helper_method 'k12?'
+
+  def use_new_styles?
+    @domain_root_account && @domain_root_account.feature_enabled?(:use_new_styles)
+  end
+  helper_method 'use_new_styles?'
 
   # Reject the request by halting the execution of the current handler
   # and returning a helpful error message (and HTTP status code).
@@ -148,10 +157,8 @@ class ApplicationController < ActionController::Base
     @real_current_user || @current_user
   end
 
-  unless CANVAS_RAILS2
-    def rescue_action_dispatch_exception
-      rescue_action_in_public(request.env['action_dispatch.exception'])
-    end
+  def rescue_action_dispatch_exception
+    rescue_action_in_public(request.env['action_dispatch.exception'])
   end
 
   protected
@@ -161,15 +168,23 @@ class ApplicationController < ActionController::Base
       infer_locale :context => @context,
                    :user => @current_user,
                    :root_account => @domain_root_account,
+                   :session_locale => session[:locale],
                    :accept_language => request.headers['Accept-Language']
     }
   end
 
   def set_locale
+    store_session_locale
     assign_localizer
     yield if block_given?
   ensure
     I18n.localizer = nil
+  end
+
+  def store_session_locale
+    return unless locale = params[:session_locale]
+    supported_locales = I18n.available_locales.map(&:to_s)
+    session[:locale] = locale if supported_locales.include? locale
   end
 
   def init_body_classes
@@ -186,7 +201,7 @@ class ApplicationController < ActionController::Base
   def fix_xhr_requests
     request.format = :js if request.xhr? && request.format == :html && !params[:html_xhr]
   end
-  
+
   # scopes all time objects to the user's specified time zone
   def set_time_zone
     if @current_user && !@current_user.time_zone.blank?
@@ -207,8 +222,6 @@ class ApplicationController < ActionController::Base
   end
 
   def set_response_headers
-    headers['X-UA-Compatible'] = 'IE=Edge,chrome=1' if CANVAS_RAILS2
-
     # we can't block frames on the files domain, since files domain requests
     # are typically embedded in an iframe in canvas, but the hostname is
     # different
@@ -315,24 +328,20 @@ class ApplicationController < ActionController::Base
   alias :authorized_action? :authorized_action
 
   def is_authorized_action?(object, *opts)
+    return false unless object
+
     user = opts.shift
-    action_session = nil
     action_session ||= session
     action_session = opts.shift if !opts[0].is_a?(Symbol) && !opts[0].is_a?(Array)
-    actions = Array(opts.shift)
-    can_do = false
+    actions = Array(opts.shift).flatten
 
     begin
-      if object == @context && user == @current_user
-        @context_all_permissions ||= @context.grants_rights?(user, session, nil)
-        can_do = actions.any?{|a| @context_all_permissions[a] }
-      else
-        can_do = object.grants_rights?(user, action_session, *actions).values.any?
-      end
+      return object.grants_any_right?(user, action_session, *actions)
     rescue => e
-      logger.warn "#{object.inspect} raised an error while granting rights.  #{e.inspect}"
+      logger.warn "#{object.inspect} raised an error while granting rights.  #{e.inspect}" if logger
     end
-    can_do
+
+    false
   end
 
   def render_unauthorized_action
@@ -429,7 +438,7 @@ class ApplicationController < ActionController::Base
         @context = api_find(Group, params[:group_id])
         params[:context_id] = params[:group_id]
         params[:context_type] = "Group"
-        @context_enrollment = @context.group_memberships.find_by_user_id(@current_user.id) if @context && @current_user      
+        @context_enrollment = @context.group_memberships.find_by_user_id(@current_user.id) if @context && @current_user
         @context_membership = @context_enrollment
       elsif params[:user_id] || (self.is_a?(UsersController) && params[:user_id] = params[:id])
         @context = api_find(User, params[:user_id])
@@ -466,7 +475,7 @@ class ApplicationController < ActionController::Base
       end
     end
   end
-  
+
   # This is used by a number of actions to retrieve a list of all contexts
   # associated with the given context.  If the context is a user then it will
   # include all the user's current contexts.
@@ -509,7 +518,7 @@ class ApplicationController < ActionController::Base
         # don't load it again if we've already got it
         next if @contexts.any? { |c| c.asset_string == include_context }
         context = Context.find_by_asset_string(include_context)
-        @contexts << context if context && context.grants_right?(@current_user, nil, :read)
+        @contexts << context if context && context.grants_right?(@current_user, :read)
       end
     end
     @contexts = @contexts.uniq
@@ -561,8 +570,8 @@ class ApplicationController < ActionController::Base
         assignment_scope = :published_assignments
       end
 
-      @groups = @context.assignment_groups.active.includes(assignment_scope)
-      @assignments = @groups.flat_map(&assignment_scope)
+      @groups = @context.assignment_groups.active
+      @assignments = AssignmentGroup.visible_assignments(@current_user, @context, @groups)
     else
       assignments_and_groups = Shard.partition_by_shard(@courses) do |courses|
         [[Assignment.published.for_course(courses).all,
@@ -665,8 +674,8 @@ class ApplicationController < ActionController::Base
     end
     false
   end
-  
-  # Used to retrieve the context from a :feed_code parameter.  These 
+
+  # Used to retrieve the context from a :feed_code parameter.  These
   # :feed_code attributes are keyed off the object type and the object's
   # uuid.  Using the uuid attribute gives us an unguessable url so
   # that we can offer the feeds without requiring password authentication.
@@ -720,7 +729,6 @@ class ApplicationController < ActionController::Base
     if !@context || (opts[:only] && !opts[:only].include?(@context.class.to_s.underscore.to_sym))
       @problem ||= t("#application.errors.invalid_feed_parameters", "Invalid feed parameters.") if (opts[:only] && !opts[:only].include?(@context.class.to_s.underscore.to_sym))
       @problem ||= t "#application.errors.feed_not_found", "Could not find feed."
-      params[:format] = 'html' if CANVAS_RAILS2
       render template: "shared/unauthorized_feed", status: :bad_request, formats: [:html]
       return false
     end
@@ -730,22 +738,21 @@ class ApplicationController < ActionController::Base
   def discard_flash_if_xhr
     flash.discard if request.xhr? || request.format.to_s == 'text/plain'
   end
-  
+
   def cancel_cache_buster
     @cancel_cache_buster = true
   end
-  
+
   def cache_buster
-    # Annoying problem.  If I set the cache-control to anything other than "no-cache, no-store" 
+    # Annoying problem.  If I set the cache-control to anything other than "no-cache, no-store"
     # then the local cache is used when the user clicks the 'back' button.  I don't know how
     # to tell the browser to ALWAYS check back other than to disable caching...
     return true if @cancel_cache_buster || request.xhr? || api_request?
     response.headers["Pragma"] = "no-cache"
     response.headers["Cache-Control"] = "no-cache, no-store, max-age=0, must-revalidate"
   end
-  
+
   def clear_cached_contexts
-    ActiveRecord::Base.clear_cached_contexts
     RoleOverride.clear_cached_contexts
   end
 
@@ -754,7 +761,7 @@ class ApplicationController < ActionController::Base
 
     ENV['RAILS_HOST_WITH_PORT'] ||= request.host_with_port rescue nil
     # We only record page_views for html page requests coming from within the
-    # app, or if coming from a developer api request and specified as a 
+    # app, or if coming from a developer api request and specified as a
     # page_view.
     if (@developer_key && params[:user_request]) || (!@developer_key && @current_user && !request.xhr? && request.get?)
       generate_page_view
@@ -830,8 +837,8 @@ class ApplicationController < ActionController::Base
         end
       end
       # If we're logging the asset access, and it's either a participatory action
-      # or it's not an update to an already-existing page_view.  We check to make sure 
-      # it's not an update because if the page_view already existed, we don't want to 
+      # or it's not an update to an already-existing page_view.  We check to make sure
+      # it's not an update because if the page_view already existed, we don't want to
       # double-count it as multiple views when it's really just a single view.
       if @current_user && @accessed_asset && (@accessed_asset[:level] == 'participate' || !@page_view_update)
         @access = AssetUserAccess.find_or_initialize_by_user_id_and_asset_code(@current_user.id, @accessed_asset[:code])
@@ -850,7 +857,7 @@ class ApplicationController < ActionController::Base
 
         @page_view_update = true
       end
-      if @page_view && !request.xhr? && request.get? && (response.content_type || "").match(/html/)
+      if @page_view && !request.xhr? && request.get? && (response.content_type || "").to_s.match(/html/)
         @page_view.render_time ||= (Time.now.utc - @page_before_render) rescue nil
         @page_view_update = true
       end
@@ -868,42 +875,40 @@ class ApplicationController < ActionController::Base
     true
   end
 
-  unless CANVAS_RAILS2
-    rescue_from Exception, :with => :rescue_exception
+  rescue_from Exception, :with => :rescue_exception
 
-    # analogous to rescue_action_without_handler from ActionPack 2.3
-    def rescue_exception(exception)
-      ActiveSupport::Deprecation.silence do
-        message = "\n#{exception.class} (#{exception.message}):\n"
-        message << exception.annoted_source_code.to_s if exception.respond_to?(:annoted_source_code)
-        message << "  " << exception.backtrace.join("\n  ")
-        logger.fatal("#{message}\n\n")
-      end
-
-      if config.consider_all_requests_local || local_request?
-        rescue_action_locally(exception)
-      else
-        rescue_action_in_public(exception)
-      end
+  # analogous to rescue_action_without_handler from ActionPack 2.3
+  def rescue_exception(exception)
+    ActiveSupport::Deprecation.silence do
+      message = "\n#{exception.class} (#{exception.message}):\n"
+      message << exception.annoted_source_code.to_s if exception.respond_to?(:annoted_source_code)
+      message << "  " << exception.backtrace.join("\n  ")
+      logger.fatal("#{message}\n\n")
     end
 
-    def interpret_status(code)
-      message = Rack::Utils::HTTP_STATUS_CODES[code]
-      code, message = [500, Rack::Utils::HTTP_STATUS_CODES[500]] unless message
-      "#{code} #{message}"
+    if config.consider_all_requests_local || local_request?
+      rescue_action_locally(exception)
+    else
+      rescue_action_in_public(exception)
     end
+  end
 
-    def response_code_for_rescue(exception)
-      ActionDispatch::ExceptionWrapper.status_code_for_exception(exception.class.name)
-    end
+  def interpret_status(code)
+    message = Rack::Utils::HTTP_STATUS_CODES[code]
+    code, message = [500, Rack::Utils::HTTP_STATUS_CODES[500]] unless message
+    "#{code} #{message}"
+  end
 
-    def render_optional_error_file(status)
-      path = "#{Rails.public_path}/#{status.to_s[0,3]}#{".html" if CANVAS_RAILS2}"
-      if File.exist?(path)
-        render :file => path, :status => status, :content_type => Mime::HTML, :layout => false, :formats => [:html]
-      else
-        head status
-      end
+  def response_code_for_rescue(exception)
+    ActionDispatch::ExceptionWrapper.status_code_for_exception(exception.class.name)
+  end
+
+  def render_optional_error_file(status)
+    path = "#{Rails.public_path}/#{status.to_s[0,3]}"
+    if File.exist?(path)
+      render :file => path, :status => status, :content_type => Mime::HTML, :layout => false, :formats => [:html]
+    else
+      head status
     end
   end
 
@@ -925,7 +930,7 @@ class ApplicationController < ActionController::Base
           :user_agent => request.headers['User-Agent'],
           :request_context_id => RequestContextGenerator.request_id,
           :account => @domain_root_account,
-          :request_method => CANVAS_RAILS2 ? request.method : request.request_method_symbol,
+          :request_method => request.request_method_symbol,
           :format => request.format,
         }.merge(ErrorReport.useful_http_env_stuff_from_request(request)))
       end
@@ -961,7 +966,7 @@ class ApplicationController < ActionController::Base
       erbfile = "500_message.html.erb" unless File.exists?(erbpath)
       @status_code = status_code
       message = exception.is_a?(RequestError) ? exception.message : nil
-      render :template => "shared/errors/#{erbfile}", 
+      render :template => "shared/errors/#{erbfile}",
         :layout => 'application',
         :status => status,
         :locals => {
@@ -971,12 +976,6 @@ class ApplicationController < ActionController::Base
           :message => message,
         }
     end
-  end
-
-  if CANVAS_RAILS2
-    rescue_responses['AuthenticationMethods::AccessTokenError'] = 401
-  else
-    ActionDispatch::ShowExceptions.rescue_responses['AuthenticationMethods::AccessTokenError'] = 401
   end
 
   def rescue_action_in_api(exception, error_report, response_code)
@@ -1032,7 +1031,7 @@ class ApplicationController < ActionController::Base
   def local_request?
     false
   end
-  
+
   def claim_session_course(course, user, state=nil)
     e = course.claim_with_teacher(user)
     session[:claimed_enrollment_uuids] ||= []
@@ -1078,16 +1077,17 @@ class ApplicationController < ActionController::Base
   end
 
   API_REQUEST_REGEX = %r{\A/api/v\d}
+  LTI_API_REQUEST_REGEX = %r{\A/api/lti/}
 
   def api_request?
-    @api_request ||= !!request.path.match(API_REQUEST_REGEX)
+    @api_request ||= !!request.path.match(API_REQUEST_REGEX) || !!request.path.match(LTI_API_REQUEST_REGEX)
   end
 
   def session_loaded?
     session.send(:loaded?) rescue false
   end
 
-  # Retrieving wiki pages needs to search either using the id or 
+  # Retrieving wiki pages needs to search either using the id or
   # the page title.
   def get_wiki_page
     @wiki = @context.wiki
@@ -1159,7 +1159,13 @@ class ApplicationController < ActionController::Base
         @return_url = named_context_url(@context, :context_external_tool_finished_url, @tool.id, :include_host => true)
         @opaque_id = @tool.opaque_identifier_for(@tag)
 
-        adapter = Lti::LtiOutboundAdapter.new(@tool, @current_user, @context).prepare_tool_launch(@return_url, launch_url: @resource_url, link_code: @opaque_id, overrides: {'resource_link_title' => @resource_title})
+        opts = {
+            launch_url: @resource_url,
+            link_code: @opaque_id,
+            overrides: {'resource_link_title' => @resource_title},
+            custom_substitutions: common_variable_substitutions
+        }
+        adapter = Lti::LtiOutboundAdapter.new(@tool, @current_user, @context).prepare_tool_launch(@return_url, opts)
         if @assignment
           @tool_settings = adapter.generate_post_payload_for_assignment(@assignment, lti_grade_passback_api_url(@tool), blti_legacy_grade_passback_api_url(@tool))
         else
@@ -1185,8 +1191,8 @@ class ApplicationController < ActionController::Base
       options[:query][:event_id] = event.id
     end
     if !contexts_to_link_to.empty? && options[:anchor].is_a?(Hash)
-      options[:anchor][:show] = contexts_to_link_to.collect{ |c| 
-        "group_#{c.class.to_s.downcase}_#{c.id}" 
+      options[:anchor][:show] = contexts_to_link_to.collect{ |c|
+        "group_#{c.class.to_s.downcase}_#{c.id}"
       }.join(',')
       options[:anchor] = options[:anchor].to_json
     end
@@ -1232,7 +1238,7 @@ class ApplicationController < ActionController::Base
     end
   end
   helper_method :conversations_path
-  
+
   # escape everything but slashes, see http://code.google.com/p/phusion-passenger/issues/detail?id=113
   FILE_PATH_ESCAPE_PATTERN = Regexp.new("[^#{URI::PATTERN::UNRESERVED}/]")
   def safe_domain_file_url(attachment, host_and_shard=nil, verifier = nil, download = false) # TODO: generalize this
@@ -1290,9 +1296,9 @@ class ApplicationController < ActionController::Base
       if [:question_banks].include?(feature)
         true
       elsif feature == :twitter
-        !!Twitter.config
+        !!Twitter::Connection.config
       elsif feature == :facebook
-        !!Facebook.config
+        !!Facebook::Connection.config
       elsif feature == :linked_in
         !!LinkedIn::Connection.config
       elsif feature == :google_docs
@@ -1385,25 +1391,19 @@ class ApplicationController < ActionController::Base
 
   def check_incomplete_registration
     if @current_user
-      js_env :INCOMPLETE_REGISTRATION => params[:registration_success] && @current_user.pre_registered?, :USER_EMAIL => @current_user.email
+      js_env :INCOMPLETE_REGISTRATION => incomplete_registration?, :USER_EMAIL => @current_user.email
     end
   end
+
+  def incomplete_registration?
+    @current_user && params[:registration_success] && @current_user.pre_registered?
+  end
+  helper_method :incomplete_registration?
 
   def page_views_enabled?
     PageView.page_views_enabled?
   end
   helper_method :page_views_enabled?
-
-  # calls send_file if the io has a local file, or send_data otherwise
-  # make sure to rewind the io first, if necessary
-  def send_file_or_data(io, opts = {})
-    cancel_cache_buster
-    if io.respond_to?(:path) && io.path.present? && File.file?(io.path)
-      send_file(io.path, opts)
-    else
-      send_data(io, opts)
-    end
-  end
 
   def verified_file_download_url(attachment, *opts)
     file_download_url(attachment, { :verifier => attachment.uuid }, *opts)
@@ -1494,11 +1494,7 @@ class ApplicationController < ActionController::Base
       json = options.delete(:json)
       unless json.is_a?(String)
         json_cast(json)
-        if CANVAS_RAILS2
-          json = MultiJson.dump(json).force_encoding(Encoding::ASCII_8BIT)
-        else
-          json = ActiveSupport::JSON.encode(json)
-        end
+        json = ActiveSupport::JSON.encode(json)
       end
 
       # prepend our CSRF protection to the JSON response, unless this is an API
@@ -1515,6 +1511,7 @@ class ApplicationController < ActionController::Base
       # file upload forms and s3 upload success redirects -- we'll respond with text instead.
       if options[:as_text] || json_as_text?
         options[:text] = json
+        options[:content_type] = "text/html"
       else
         options[:json] = json
       end
@@ -1587,7 +1584,7 @@ class ApplicationController < ActionController::Base
     @notices ||= begin
       notices = []
       if !browser_supported? && !@embedded_view && !cookies['unsupported_browser_dismissed']
-        notices << {:type => 'warning', :content => unsupported_browser, :classes => 'unsupported_browser'} 
+        notices << {:type => 'warning', :content => unsupported_browser, :classes => 'unsupported_browser'}
       end
       if error = flash[:error]
         flash.delete(:error)
@@ -1669,22 +1666,6 @@ class ApplicationController < ActionController::Base
     data
   end
 
-  if CANVAS_RAILS2
-    filter_parameter_logging *LoggingFilter.filtered_parameters
-
-    # filter out sensitive parameters in the query string as well when logging
-    # the rails "Completed in XXms" line.
-    # this is fixed in Rails 3.x
-    def complete_request_uri
-      uri = LoggingFilter.filter_uri(request.fullpath)
-      "#{request.protocol}#{request.host}#{uri}"
-    end
-
-    def view_context
-      @template
-    end
-  end
-
   def self.batch_jobs_in_actions(opts = {})
     batch_opts = opts.delete(:batch)
     around_filter(opts) do |controller, action|
@@ -1754,5 +1735,15 @@ class ApplicationController < ActionController::Base
       google_docs = GoogleDocs::Connection.new(session[:oauth_gdocs_access_token_token], session[:oauth_gdocs_access_token_secret])
     end
     google_docs
+  end
+
+
+  def twitter_connection
+    if @current_user
+      service = @current_user.user_services.find_by_service("twitter")
+      return Twitter::Connection.new(service.token, service.secret)
+    else
+      return Twitter::Connection.new(session[:oauth_twitter_access_token_token], session[:oauth_twitter_access_token_secret])
+    end
   end
 end

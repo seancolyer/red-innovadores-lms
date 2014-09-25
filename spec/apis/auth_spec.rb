@@ -1,5 +1,5 @@
 #
-# Copyright (C) 2011 - 2013 Instructure, Inc.
+# Copyright (C) 2011 - 2014 Instructure, Inc.
 #
 # This file is part of Canvas.
 #
@@ -21,8 +21,11 @@ require File.expand_path(File.dirname(__FILE__) + '/../sharding_spec_helper')
 
 describe "API Authentication", type: :request do
 
-  before do
+  before :once do
     @key = DeveloperKey.create!
+  end
+
+  before :each do
     @client_id = @key.id
     @client_secret = @key.api_key
     consider_all_requests_local(false)
@@ -72,9 +75,12 @@ describe "API Authentication", type: :request do
 
     describe "should continue to allow developer key + basic auth access" do
       # this will continue to be supported until we notify api users and explicitly phase it out
-      before do
+      before :once do
         user_with_pseudonym(:active_user => true, :username => 'test1@example.com', :password => 'test123')
         course_with_teacher(:user => @user)
+      end
+
+      before :each do
         post '/login', 'pseudonym_session[unique_id]' => 'test1@example.com', 'pseudonym_session[password]' => 'test123'
       end
 
@@ -247,7 +253,7 @@ describe "API Authentication", type: :request do
 
       it "should execute for saml login" do
         pending("requires SAML extension") unless AccountAuthorizationConfig.saml_enabled
-        Setting.set_config("saml", {})
+        ConfigFile.stub('saml', {})
         account = account_with_saml(:account => Account.default)
         flow do
           Onelogin::Saml::Response.any_instance.stubs(:settings=)
@@ -271,7 +277,10 @@ describe "API Authentication", type: :request do
           cas = CASClient::Client.new(:cas_base_url => account.account_authorization_config.auth_base)
           cas.instance_variable_set(:@stub_user, @user)
           def cas.validate_service_ticket(st)
-            st.response = CASClient::ValidationResponse.new("yes\n#{@stub_user.pseudonyms.first.unique_id}\n")
+            response = CASClient::ValidationResponse.new("yes\n#{@stub_user.pseudonyms.first.unique_id}\n")
+            st.user = response.user
+            st.success = response.is_success?
+            return st
           end
           CASClient::Client.stubs(:new).returns(cas)
 
@@ -466,7 +475,7 @@ describe "API Authentication", type: :request do
   end
 
   describe "access token" do
-    before do
+    before :once do
       user_with_pseudonym(:active_user => true, :username => 'test1@example.com', :password => 'test123')
       course_with_teacher(:user => @user)
       @token = @user.access_tokens.create!
@@ -492,7 +501,7 @@ describe "API Authentication", type: :request do
 
     it "should allow passing the access token in the post body" do
       @me = @user
-      Account.default.add_user(@user)
+      Account.default.account_users.create!(user: @user)
       u2 = user
       Account.default.pseudonyms.create!(unique_id: 'user', user: u2)
       @user = @me
@@ -563,7 +572,7 @@ describe "API Authentication", type: :request do
   end
 
   describe "as_user_id" do
-    before do
+    before :once do
       course_with_teacher(:active_all => true)
       @course1 = @course
       course_with_student(:user => @user, :active_all => true)
@@ -573,7 +582,6 @@ describe "API Authentication", type: :request do
     end
 
     it "should allow as_user_id" do
-      @student.pseudonyms.create!(:unique_id => 'student', :account => Account.default)
       account_admin_user(:account => Account.site_admin)
       user_with_pseudonym(:user => @user)
 
@@ -594,6 +602,7 @@ describe "API Authentication", type: :request do
         'primary_email' => "blah@example.com",
         'integration_id' => nil,
         'time_zone' => 'Etc/UTC',
+        'locale' => nil,
         'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/user_#{@student.uuid}.ics" }
       }
 
@@ -615,6 +624,7 @@ describe "API Authentication", type: :request do
           'primary_email' => "blah@example.com",
           'integration_id' => nil,
           'time_zone' => 'Etc/UTC',
+          'locale' => nil,
           'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/user_#{@student.uuid}.ics" }
       }
 
@@ -634,6 +644,7 @@ describe "API Authentication", type: :request do
           'primary_email' => "blah@example.com",
           'integration_id' => nil,
           'time_zone' => 'Etc/UTC',
+          'locale' => nil,
           'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/user_#{@student.uuid}.ics" }
       }
     end
@@ -661,6 +672,7 @@ describe "API Authentication", type: :request do
         'title' => nil,
         'primary_email' => "blah@example.com",
         'time_zone' => 'Etc/UTC',
+        'locale' => nil,
         'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/user_#{@student.uuid}.ics" },
       }
     end
@@ -689,6 +701,7 @@ describe "API Authentication", type: :request do
           'title' => nil,
           'primary_email' => "blah@example.com",
           'time_zone' => 'Etc/UTC',
+          'locale' => nil,
           'calendar' => { 'ics' => "http://www.example.com/feeds/calendars/user_#{@student.uuid}.ics" },
       }
     end
@@ -715,7 +728,7 @@ describe "API Authentication", type: :request do
   end
 
   describe "CSRF protection" do
-    before do
+    before :once do
       course_with_teacher(:active_all => true)
       @course1 = @course
       course_with_student(:user => @user, :active_all => true)

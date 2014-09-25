@@ -2,6 +2,17 @@ require 'i18n_tasks'
 require 'i18n_extraction'
 
 namespace :i18n do
+  EXCLUDED_JAVASCRIPT_SOURCES = /
+    \A\.\/public\/javascripts\/(
+      i18nObj.js|
+      i18n.js|
+      .*jst\/|
+      translations\/|
+      compiled\/handlebars_helpers.js|
+      tinymce\/jscripts\/tiny_mce(.*\/langs|\/tiny_mce\w*\.js)
+    )
+  /x
+
   def infer_scope(filename)
     case filename
       when /app\/views\/.*\.handlebars\z/
@@ -80,13 +91,13 @@ namespace :i18n do
 
     # Ruby
     files = (Dir.glob('./*') - ['./vendor'] + ['./vendor/plugins/*'] - ['./guard', './tmp']).map { |d| Dir.glob("#{d}/**/*rb") }.flatten.
-      reject{ |file| file =~ %r{\A\./(rb-fsevent|vendor/plugins/rails_xss|db|spec)/} }
+      reject{ |file| file =~ %r{\A\./(rb-fsevent|db|spec)/} }
     files &= only if only
     file_count = files.size
     rb_extractor = I18nExtraction::RubyExtractor.new(:translations => @translations)
     process_files(files) do |file|
       source = File.read(file)
-      source = RailsXss::Erubis.new(source).src if file =~ /\.erb\z/
+      source = ActionView::Template::Handlers::Erubis.new(source).src if file =~ /\.erb\z/
 
       # add a magic comment since that's the best way to convince RubyParser
       # 3.x it should treat the source as utf-8 (it ignores the source string encoding)
@@ -100,18 +111,26 @@ namespace :i18n do
 
 
     # JavaScript
-    files = (Dir.glob('./public/javascripts/{,**/*/**/}*.js') + Dir.glob('./app/views/**/*.erb')).
-      reject{ |file| file =~ /\A\.\/public\/javascripts\/(i18nObj.js|i18n.js|.*jst\/|translations\/|compiled\/handlebars_helpers.js|tinymce\/jscripts\/tiny_mce(.*\/langs|\/tiny_mce\w*\.js))/ }
+    files = (
+      Dir.glob('./public/javascripts/{,**/*/**/}*.js') +
+      Dir.glob('./app/views/**/*.erb')
+    )
+    files = files.reject { |file| file =~ EXCLUDED_JAVASCRIPT_SOURCES }
     files &= only if only
     js_extractor = I18nExtraction::JsExtractor.new(:translations => @translations)
-    process_files(files) do |file|
-      t2 = Time.now
-      ret = js_extractor.process(File.read(file), :erb => (file =~ /\.erb\z/), :filename => file)
-      file_count += 1 if ret
-      puts "#{file} #{Time.now - t2}" if Time.now - t2 > 1
-      ret
-    end
+    process_files(files) do |filename|
+      rc = true
+      started_at = Time.now
+      options = { erb: filename =~ /\.erb\z/, filename: filename }
 
+      I18nTasks::Utils.extract_js_scripts(File.read(filename)).each do |script|
+        rc = rc && js_extractor.process(script, options)
+      end
+
+      file_count += 1 if rc
+      puts "#{filename} #{Time.now - started_at}" if Time.now - started_at > 1
+      rc
+    end
 
     # Handlebars
     files = Dir.glob('./app/views/jst/{,**/*/**/}*.handlebars')
@@ -142,7 +161,7 @@ namespace :i18n do
     FileUtils.mkdir_p(File.join(yaml_dir))
     yaml_file = File.join(yaml_dir, "en.yml")
     File.open(Rails.root.join(yaml_file), "w") do |file|
-      file.write({'en' => @translations}.ya2yaml(:syck_compatible => true))
+      file.write({'en' => @translations.except('locales', 'qualified_locale')}.ya2yaml(:syck_compatible => true))
     end
     print "Wrote new #{yaml_file}\n\n"
   end
@@ -155,6 +174,10 @@ namespace :i18n do
     # the `environment` rake task.
     require 'bundler'
     Bundler.setup
+    # for consistency in how canvas does json ... this way our specs can
+    # verify _core_en is up to date
+    ActiveSupport::JSON.backend = :oj
+    MultiJson.dump_options = {:escape_mode => :xss_safe}
 
     # set up rails i18n paths ... normally rails env does this for us :-/
     require 'action_controller' 
@@ -185,35 +208,58 @@ namespace :i18n do
       exit 0
     end
 
-    process_files = lambda do |extractor, files, arg_block|
-      files.each do |file|
-        begin
-          extractor.translations = {}
-          extractor.process(File.read(file), *arg_block.call(file)) or next
+    # Process a single script
+    process_file = lambda do |extractor, file, filename, arg_block|
+      extractor.translations = {}
 
-          translations = extractor.translations.flatten_keys.keys
-          next if translations.empty?
+      begin
+        unless extractor.process(file, *arg_block.call(filename))
+          return
+        end
+      rescue Exception => e
+        puts e
+        raise "Error reading #{file}: #{$!}\nYou should probably run `rake i18n:check' first"
+      end
 
-          file_translations[extractor.scope] ||= {}
-          locales.each do |locale|
-            file_translations[extractor.scope].update flat_translations.slice(*translations.map{ |k| k.gsub(/\A/, "#{locale}.") })
-          end
-        rescue
-          raise "Error reading #{file}: #{$!}\nYou should probably run `rake i18n:check' first"
+      translations = extractor.translations.flatten_keys.keys
+
+      unless translations.empty?
+        scope = extractor.scope
+
+        file_translations[scope] ||= {}
+        locales.each do |locale|
+          file_translations[scope].update flat_translations.slice(*translations.map{ |k| k.gsub(/\A/, "#{locale}.") })
+        end
+      end
+    end
+
+    process_files = lambda do |extractor, files, arg_block, has_precompiled|
+      # Process any number of scripts that may be contained in a single file
+      files.each do |filename|
+        scripts = if has_precompiled
+          I18nTasks::Utils.extract_js_scripts(File.read(filename))
+        else
+          [ File.read(filename) ]
+        end
+
+        scripts.each do |script|
+          process_file.call(extractor, script, filename, arg_block)
         end
       end
     end
 
     # JavaScript
-    files = Dir.glob('./public/javascripts/{,**/*/**/}*.js').
-      reject{ |file| file =~ /\A\.\/public\/javascripts\/(i18nObj.js|i18n.js|.*jst\/|translations\/|compiled\/handlebars_helpers.js|tinymce\/jscripts\/tiny_mce(.*\/langs|\/tiny_mce\w*\.js))/ }
+    files = Dir.glob('./public/javascripts/{,**/*/**/}*.js').reject do |file|
+      file =~ EXCLUDED_JAVASCRIPT_SOURCES
+    end
+
     js_extractor = I18nExtraction::JsExtractor.new
-    process_files.call(js_extractor, files, lambda{ |file| [{:filename => file}] } )
+    process_files.call(js_extractor, files, lambda{ |file| [{:filename => file}] }, true)
 
     # Handlebars
     files = Dir.glob('./app/views/jst/{,**/*/**/}*.handlebars')
     handlebars_extractor = I18nExtraction::HandlebarsExtractor.new
-    process_files.call(handlebars_extractor, files, lambda{ |file| [infer_scope(file)] } )
+    process_files.call(handlebars_extractor, files, lambda{ |file| [infer_scope(file)] }, false)
 
     dump_translations = lambda do |translation_name, translations|
       file = "public/javascripts/translations/#{translation_name}.js"
@@ -447,7 +493,7 @@ namespace :i18n do
   desc "Imports new translations, ignores missing or unexpected keys"
   task :autoimport, [:translated_file, :source_file] => :environment do |t, args|
     require 'open-uri'
-    
+
     if args[:source_file].present?
       source_translations = YAML.safe_load(open(args[:source_file]))
     else
@@ -464,13 +510,14 @@ namespace :i18n do
     raise "Need source translations" unless source_translations
     raise "Need translated_file" unless new_translations
 
+    errors = []
+
     import = I18nTasks::I18nImport.new(source_translations, new_translations)
 
-    puts import.language
     complete_translations = import.compile_complete_translations do |error_items, description|
       if description =~ /mismatches/
         # Output malformed stuff and don't import them
-        puts error_items.join("\n")
+        errors.concat error_items
         :discard
       else
         # Import everything else
@@ -482,6 +529,11 @@ namespace :i18n do
     File.open("config/locales/#{import.language}.yml", "w") { |f|
       f.write({import.language => complete_translations}.ya2yaml(:syck_compatible => true))
     }
+
+    puts({
+      language: import.language,
+      errors: errors,
+    }.to_json)
   end
 
   def transifex_languages(languages)

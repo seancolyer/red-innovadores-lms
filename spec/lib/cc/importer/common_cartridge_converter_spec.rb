@@ -417,6 +417,7 @@ describe "More Standard Common Cartridge importing" do
     @migration.stubs(:to_import).returns(nil)
     @migration.stubs(:context).returns(@copy_to)
     @migration.stubs(:import_object?).returns(true)
+    @migration.stubs(:add_imported_item)
   end
 
   it "should properly handle top-level resource references" do
@@ -534,16 +535,115 @@ describe "non-ASCII attachment names" do
     archive_file_path = File.join(File.dirname(__FILE__) + "/../../../fixtures/migration/unicode-filename-test-export.imscc")
     @converter = CC::Importer::Standard::Converter.new(:export_archive_path=>archive_file_path)
     lambda { @converter.export }.should_not raise_error
-    contents = ["course_settings/syllabus.html",
+    contents = ["course_settings/assignment_groups.xml",
+                "course_settings/canvas_export.txt",
                 "course_settings/course_settings.xml",
-                "web_resources/xyz.txt",
-                "web_resources/molé.txt",
-                "web_resources/abc.txt"]
-    @converter.resources.values.map { |v| v[:files][0][:href] }.sort.should == contents.sort
+                "course_settings/files_meta.xml",
+                "course_settings/syllabus.html",
+                "abc.txt",
+                "molé.txt",
+                "xyz.txt"
+                ]
+    @converter.course[:file_map].values.map { |v| v[:path_name] }.sort.should == contents.sort
 
     Zip::File.open File.join(@converter.base_export_dir, "all_files.zip") do |zipfile|
       zipcontents = zipfile.entries.map(&:name)
       (contents - zipcontents).should eql []
     end
+  end
+end
+
+describe "LTI tool combination" do
+  before(:all) do
+    archive_file_path = File.join(File.dirname(__FILE__) + "/../../../fixtures/migration/cc_lti_combine_test.zip")
+    unzipped_file_path = File.join(File.dirname(archive_file_path), "cc_#{File.basename(archive_file_path, '.zip')}", 'oi')
+    @export_folder = File.join(File.dirname(archive_file_path), "cc_cc_lti_combine_test.")
+    @converter = CC::Importer::Standard::Converter.new(:export_archive_path=>archive_file_path, :course_name=>'oi', :base_download_dir=>unzipped_file_path)
+    @converter.export
+    @course_data = @converter.course.with_indifferent_access
+    @course_data['all_files_export'] ||= {}
+    @course_data['all_files_export']['file_path'] = @course_data['all_files_zip']
+
+    @course = course
+    @migration = ContentMigration.create(:context => @course)
+    @migration.migration_type = "common_cartridge_importer"
+    @migration.migration_settings[:migration_ids_to_import] = {:copy => {}}
+    enable_cache do
+      Importers::CourseContentImporter.import_content(@course, @course_data, nil, @migration)
+    end
+  end
+
+  after(:all) do
+    @converter.delete_unzipped_archive
+    if File.exists?(@export_folder)
+      FileUtils::rm_rf(@export_folder)
+    end
+    truncate_all_tables
+  end
+
+  it "should combine lti tools in cc packages when possible" do
+    @course.context_external_tools.count.should == 2
+    @course.context_external_tools.map(&:migration_id).sort.should == ["TOOL_1", "TOOL_3"]
+
+    combined_tool = @course.context_external_tools.find_by_migration_id("TOOL_1")
+    combined_tool.domain.should == "www.example.com"
+    other_tool = @course.context_external_tools.find_by_migration_id("TOOL_3")
+    @course.context_module_tags.count.should == 5
+
+    combined_tags = @course.context_module_tags.select{|ct| ct.url.start_with?("https://www.example.com")}
+    combined_tags.count.should == 4
+    combined_tags.each do |tag|
+      tag.content.should == combined_tool
+    end
+
+    other_tag = (@course.context_module_tags.to_a - combined_tags).first
+    other_tag.url.start_with?("https://www.differentdomainexample.com").should be_true
+    other_tag.content.should == other_tool
+  end
+end
+
+describe "cc assignment extensions" do
+  before(:all) do
+    archive_file_path = File.join(File.dirname(__FILE__) + "/../../../fixtures/migration/cc_assignment_extension.zip")
+    unzipped_file_path = File.join(File.dirname(archive_file_path), "cc_#{File.basename(archive_file_path, '.zip')}", 'oi')
+    @export_folder = File.join(File.dirname(archive_file_path), "cc_cc_assignment_extension")
+    @converter = CC::Importer::Standard::Converter.new(:export_archive_path=>archive_file_path, :course_name=>'oi', :base_download_dir=>unzipped_file_path)
+    @converter.export
+    @course_data = @converter.course.with_indifferent_access
+
+    @course = course
+    @migration = ContentMigration.create(:context => @course)
+    @migration.migration_type = "common_cartridge_importer"
+    @migration.migration_settings[:migration_ids_to_import] = {:copy => {}}
+    enable_cache do
+      Importers::CourseContentImporter.import_content(@course, @course_data, nil, @migration)
+    end
+  end
+
+  after(:all) do
+    @converter.delete_unzipped_archive
+    if File.exists?(@export_folder)
+      FileUtils::rm_rf(@export_folder)
+    end
+    truncate_all_tables
+  end
+
+  it "should parse canvas data from cc extension" do
+    @migration.migration_issues.count.should == 0
+
+    att = @course.attachments.find_by_migration_id('ieee173de6109d169c627d07bedae0595')
+
+    @course.assignments.count.should == 2
+    assignment1 = @course.assignments.find_by_migration_id("icd613a5039d9a1539e100058efe44242")
+    assignment1.grading_type.should == 'pass_fail'
+    assignment1.points_possible.should == 20
+    assignment1.description.should include("<img src=\"/courses/#{@course.id}/files/#{att.id}/preview\" alt=\"dana_small.png\">")
+    assignment1.submission_types.should == "online_text_entry,online_url,media_recording,online_upload" # overridden
+
+    assignment2 = @course.assignments.find_by_migration_id("icd613a5039d9a1539e100058efe44242copy")
+    assignment2.grading_type.should == 'points'
+    assignment2.points_possible.should == 21
+    assignment2.description.should include('hi, the canvas meta stuff does not have submission types')
+    assignment2.submission_types.should == "online_upload,online_text_entry,online_url"
   end
 end

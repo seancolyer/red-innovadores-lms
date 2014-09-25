@@ -31,7 +31,14 @@ class CommunicationChannel < ActiveRecord::Base
   has_many :messages
   belongs_to :access_token
 
-  before_save :consider_retiring, :assert_path_type, :set_confirmation_code
+  EXPORTABLE_ATTRIBUTES = [
+    :id, :path, :path_type, :position, :user_id, :pseudonym_id, :bounce_count, :workflow_state, :confirmation_code,
+    :created_at, :updated_at, :build_pseudonym_on_confirm
+  ]
+
+  EXPORTABLE_ASSOCIATIONS = [:pseudonyms, :pseudonym, :user]
+
+  before_save :assert_path_type, :set_confirmation_code
   before_save :consider_building_pseudonym
   validates_presence_of :path, :path_type, :user, :workflow_state
   validate :uniqueness_of_path
@@ -52,10 +59,10 @@ class CommunicationChannel < ActiveRecord::Base
   TYPE_FACEBOOK = 'facebook'
   TYPE_PUSH     = 'push'
 
-  RETIRE_THRESHOLD = 5
+  RETIRE_THRESHOLD = 3
 
   def self.sms_carriers
-    @sms_carriers ||= Canvas::ICU.collate_by((Setting.from_config('sms', false) ||
+    @sms_carriers ||= Canvas::ICU.collate_by((ConfigFile.load('sms', false) ||
         { 'AT&T' => 'txt.att.net',
           'Alltel' => 'message.alltel.com',
           'Boost' => 'myboostmobile.com',
@@ -121,12 +128,11 @@ class CommunicationChannel < ActiveRecord::Base
     return if path.nil?
     return if retired?
     return unless user_id
-    conditions = ["LOWER(path)=LOWER(?) AND user_id=? AND path_type=? AND workflow_state IN('unconfirmed', 'active')", path, user_id, path_type]
+    scope = self.class.by_path(path).where(user_id: user_id, path_type: path_type, workflow_state: ['unconfirmed', 'active'])
     unless new_record?
-      conditions.first << " AND id<>?"
-      conditions << id
+      scope = scope.where("id<>?", id)
     end
-    if self.class.where(conditions).exists?
+    if scope.exists?
       self.errors.add(:path, :taken, :value => path)
     end
   end
@@ -200,9 +206,9 @@ class CommunicationChannel < ActiveRecord::Base
   def set_confirmation_code(reset=false)
     self.confirmation_code = nil if reset
     if self.path_type == TYPE_EMAIL or self.path_type.nil?
-      self.confirmation_code ||= CanvasUuid::Uuid.generate(nil, 25)
+      self.confirmation_code ||= CanvasSlug.generate(nil, 25)
     else
-      self.confirmation_code ||= CanvasUuid::Uuid.generate
+      self.confirmation_code ||= CanvasSlug.generate
     end
     true
   end
@@ -218,19 +224,22 @@ class CommunicationChannel < ActiveRecord::Base
     end
   }
 
-  scope :by_path, lambda { |path|
+  def self.by_path_condition(path)
     if %{mysql mysql2}.include?(connection_pool.spec.config[:adapter])
-      where(:path => path)
+      path
     else
-      where("LOWER(communication_channels.path)=LOWER(?)", path)
+      "LOWER(#{path})"
     end
+  end
+  scope :by_path, lambda { |path|
+    where("#{by_path_condition("communication_channels.path")}=#{by_path_condition("?")}", path)
   }
 
-  scope :email, where(:path_type => TYPE_EMAIL)
-  scope :sms, where(:path_type => TYPE_SMS)
+  scope :email, -> { where(:path_type => TYPE_EMAIL) }
+  scope :sms, -> { where(:path_type => TYPE_SMS) }
 
-  scope :active, where(:workflow_state => 'active')
-  scope :unretired, where("communication_channels.workflow_state<>'retired'")
+  scope :active, -> { where(:workflow_state => 'active') }
+  scope :unretired, -> { where("communication_channels.workflow_state<>'retired'") }
 
   scope :for_notification_frequency, lambda { |notification, frequency|
     includes(:notification_policies).where(:notification_policies => { :notification_id => notification, :frequency => frequency })
@@ -253,10 +262,10 @@ class CommunicationChannel < ActiveRecord::Base
       all
   end
 
-  scope :include_policies, includes(:notification_policies)
+  scope :include_policies, -> { includes(:notification_policies) }
 
   scope :in_state, lambda { |state| where(:workflow_state => state.to_s) }
-  scope :of_type, lambda {|type| where(:path_type => type) }
+  scope :of_type, lambda { |type| where(:path_type => type) }
   
   def can_notify?
     self.notification_policies.any? { |np| np.frequency == 'never' } ? false : true
@@ -291,11 +300,6 @@ class CommunicationChannel < ActiveRecord::Base
     true
   end
   
-  def consider_retiring
-    self.retire if self.bounce_count >= RETIRE_THRESHOLD
-    true
-  end
-  
   alias_method :destroy!, :destroy
   def destroy
     self.workflow_state = 'retired'
@@ -315,9 +319,7 @@ class CommunicationChannel < ActiveRecord::Base
     end
     
     state :retired do
-      event :re_activate, :transitions_to => :active do
-        self.bounce_count = 0
-      end
+      event :re_activate, :transitions_to => :active
     end
   end
 
@@ -341,7 +343,7 @@ class CommunicationChannel < ActiveRecord::Base
     scope = CommunicationChannel.active.by_path(self.path).of_type(self.path_type)
     merge_candidates = {}
     Shard.with_each_shard(shards) do
-      scope = scope.shard(Shard.current) unless CANVAS_RAILS2
+      scope = scope.shard(Shard.current)
       scope.where("user_id<>?", self.user_id).includes(:user).map(&:user).select do |u|
         result = merge_candidates.fetch(u.global_id) do
           merge_candidates[u.global_id] = (u.all_active_pseudonyms.length != 0)
@@ -379,4 +381,16 @@ class CommunicationChannel < ActiveRecord::Base
         end
       end
     end
+
+  def bouncing?
+    self.bounce_count >= RETIRE_THRESHOLD
+  end
+
+  def self.bounce_for_path(path)
+    Shard.with_each_shard(CommunicationChannel.associated_shards(path)) do
+      CommunicationChannel.unretired.email.by_path(path).each do |channel|
+        channel.update_attribute(:bounce_count, channel.bounce_count + 1)
+      end
+    end
+  end
 end

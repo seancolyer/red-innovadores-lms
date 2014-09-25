@@ -33,6 +33,8 @@ define [
         assignment_groups: Ember.ArrayProxy.create(content: clone fixtures.assignment_groups)
         submissions: Ember.ArrayProxy.create(content: [])
         sections: Ember.ArrayProxy.create(content: clone fixtures.sections)
+        outcomes: Ember.ArrayProxy.create(content: clone fixtures.outcomes)
+        outcome_rollups: Ember.ArrayProxy.create(content: clone fixtures.outcome_rollups)
       })
 
   teardown = ->
@@ -58,6 +60,10 @@ define [
     ok !@srgb.get('assignments').findBy('name', 'Not Graded')
     equal @srgb.get('assignments.firstObject').name, fixtures.assignment_groups[0].assignments[0].name
 
+  test 'calculates outcomes properly', ->
+    equal @srgb.get('outcomes.length'), 2
+    equal @srgb.get('outcomes.firstObject').title, fixtures.outcomes[0].title
+
   test 'studentsHash returns the expected hash', ->
     _.each @srgb.studentsHash(), (obj) =>
       strictEqual @srgb.get('students').findBy('id', obj.id), obj
@@ -77,16 +83,18 @@ define [
     equal @srgb.get('displayName'), "name"
 
   test 'displayPointTotals is false when groups are weighted even if showTotalAsPoints is true', ->
-    @srgb.set('showTotalAsPoints', true)
-    @srgb.set('groupsAreWeighted', true)
-    equal @srgb.get('displayPointTotals'), false
+    Ember.run =>
+      @srgb.set('showTotalAsPoints', true)
+      @srgb.set('groupsAreWeighted', true)
+      equal @srgb.get('displayPointTotals'), false
 
   test 'displayPointTotals is toggled by showTotalAsPoints when groups are unweighted', ->
-    @srgb.set('groupsAreWeighted', false)
-    @srgb.set('showTotalAsPoints', true)
-    equal @srgb.get('displayPointTotals'), true
-    @srgb.set('showTotalAsPoints', false)
-    equal @srgb.get('displayPointTotals'), false
+    Ember.run =>
+      @srgb.set('groupsAreWeighted', false)
+      @srgb.set('showTotalAsPoints', true)
+      equal @srgb.get('displayPointTotals'), true
+      @srgb.set('showTotalAsPoints', false)
+      equal @srgb.get('displayPointTotals'), false
 
   test 'updateSubmission attaches the submission to the student', ->
     student = clone fixtures.students[0].user
@@ -110,16 +118,6 @@ define [
       @srgb.set('assignmentSort', @srgb.get('assignmentSortOptions').findBy('value', 'assignment_group'))
     equal @srgb.get('assignments.firstObject.name'), 'Z Eats Soup'
     equal @srgb.get('assignments.lastObject.name'), 'Da Fish and Chips!'
-
-  test 'correctly determines if prev/next student exists on load', ->
-    equal @srgb.get('studentIndex'), -1
-    equal @srgb.get('disablePrevStudentButton'), true
-    equal @srgb.get('disableNextStudentButton'), false
-
-  test 'correctly determines if prev/next assignment exists on load', ->
-    equal @srgb.get('assignmentIndex'), -1
-    equal @srgb.get('disablePrevAssignmentButton'), true
-    equal @srgb.get('disableNextAssignmentButton'), false
 
   test 'updates assignment groups and weightingScheme when event is triggered', ->
     window.ENV.GRADEBOOK_OPTIONS.group_weighting_scheme = 'whoa'
@@ -170,35 +168,16 @@ define [
   test 'selectedSubmission should be null when just selectedStudent is set', ->
     strictEqual @srgb.get('selectedSubmission'), null
 
-  test 'correctly determines index and if prev/next student exists for first student', ->
-    equal @srgb.get('studentIndex'), 0
-    equal @srgb.get('disablePrevStudentButton'), true
-    equal @srgb.get('disableNextStudentButton'), false
-
-  test 'correctly determines index and if prev/next student exists for second student', ->
-    Ember.run =>
-      students = @srgb.get('students')
-      @srgb.set('selectedStudent', students.objectAt(1))
-    equal @srgb.get('studentIndex'), 1
-    equal @srgb.get('disablePrevStudentButton'), false
-    equal @srgb.get('disableNextStudentButton'), false
-
-  test 'correctly determines index and if prev/next student exists for last student', ->
-    Ember.run =>
-      student = @srgb.get('students.lastObject')
-      @srgb.set('selectedStudent', student)
-    equal @srgb.get('studentIndex'), 9
-    equal @srgb.get('disableNextStudentButton'), true
-    equal @srgb.get('disablePrevStudentButton'), false
-
-  module 'screenreader_gradebook_controller: with selected student and selected assignment',
+  module 'screenreader_gradebook_controller: with selected student, assignment, and outcome',
     setup: ->
       setup.call this
       Ember.run =>
         @student = @srgb.get('students.firstObject')
         @assignment = @srgb.get('assignments.firstObject')
+        @outcome = @srgb.get('outcomes.firstObject')
         @srgb.set('selectedStudent', @student)
         @srgb.set('selectedAssignment', @assignment)
+        @srgb.set('selectedOutcome', @outcome)
 
     teardown: ->
       teardown.call this
@@ -208,6 +187,11 @@ define [
     selectedAssignment = @srgb.get('selectedAssignment')
     strictEqual ad.assignment, selectedAssignment
     strictEqual ad.cnt, 3
+
+  test 'outcomeDetails is computed properly', ->
+    od = @srgb.get('outcomeDetails')
+    selectedOutcome = @srgb.get('selectedOutcome')
+    strictEqual od.cnt, 1
 
   test 'selectedSubmission is computed properly', ->
     selectedSubmission = @srgb.get('selectedSubmission')
@@ -234,28 +218,6 @@ define [
       assignments = @srgb.get('assignments')
       @srgb.set('selectedAssignment', assignments.objectAt(1))
     equal @srgb.get('assignmentSubmissionTypes'), 'Online URL, Online text entry'
-
-  test 'correctly determines if prev/next assignment exists for first assignment', ->
-    equal @srgb.get('assignmentIndex'), 0
-    equal @srgb.get('disablePrevAssignmentButton'), true
-    equal @srgb.get('disableNextAssignmentButton'), false
-
-  test 'correctly determines if prev/next assignment exists for second assignment', ->
-    Ember.run =>
-      assignments = @srgb.get('assignments')
-      @srgb.set('selectedAssignment', assignments.objectAt(1))
-    equal @srgb.get('assignmentIndex'), 1
-    equal @srgb.get('disablePrevAssignmentButton'), false
-    equal @srgb.get('disableNextAssignmentButton'), false
-
-  test 'correctly determines if prev/next assignment exists for last assignment', ->
-    Ember.run =>
-      assignment = @srgb.get('assignments.lastObject')
-      @srgb.set('selectedAssignment', assignment)
-    equal @srgb.get('assignmentIndex'), 6
-    equal @srgb.get('disablePrevAssignmentButton'), false
-    equal @srgb.get('disableNextAssignmentButton'), true
-
 
   module 'screenreader_gradebook_controller:draftState',
     setup: ->
@@ -469,7 +431,35 @@ define [
     equal @srgb.get('invalidGroupsWarningPhrases'), "Note: Score does not include assignments from the group Invalid AG because it has no points possible."
 
   test 'sets showInvalidGroupWarning to false if groups are not weighted', ->
-    @srgb.set('weightingScheme', "equal")
-    equal @srgb.get('showInvalidGroupWarning'), false
-    @srgb.set('weightingScheme', "percent")
-    equal @srgb.get('showInvalidGroupWarning'), true
+    Ember.run =>
+      @srgb.set('weightingScheme', "equal")
+      equal @srgb.get('showInvalidGroupWarning'), false
+      @srgb.set('weightingScheme', "percent")
+      equal @srgb.get('showInvalidGroupWarning'), true
+
+
+  module 'screenreader_gradebook_controller: differentiated assignments',
+    setup: ->
+      setup.call this, true
+    teardown: ->
+      teardown.call this
+
+  test 'selectedSubmissionHidden is false when students have visibility', ->
+    student = @srgb.get('students.firstObject')
+    assignment = @srgb.get('assignments.firstObject')
+
+    Ember.run =>
+      @srgb.set('selectedAssignment', assignment)
+      @srgb.set('selectedStudent', student)
+      equal @srgb.get('selectedSubmissionHidden'), false
+
+  test 'selectedSubmissionHidden is false when students have visibility', ->
+    student = @srgb.get('students').objectAt(2)
+    assignment = @srgb.get('assignments.firstObject')
+
+    Ember.run =>
+      @srgb.set('selectedAssignment', assignment)
+      @srgb.set('selectedStudent', student)
+      equal @srgb.get('selectedSubmissionHidden'), true
+
+

@@ -19,6 +19,13 @@
 class AssessmentQuestion < ActiveRecord::Base
   include Workflow
   attr_accessible :name, :question_data, :form_question_data
+  EXPORTABLE_ATTRIBUTES = [
+    :id, :name, :question_data, :context_id, :context_type, :workflow_state,
+    :created_at, :updated_at, :assessment_question_bank_id, :deleted_at, :position
+  ]
+
+  EXPORTABLE_ASSOCIATIONS = [:quiz_questions, :attachments, :context, :assessment_question_bank]
+
   has_many :quiz_questions, :class_name => 'Quizzes::QuizQuestion'
   has_many :attachments, :as => :context
   delegate :context, :context_id, :context_type, :to => :assessment_question_bank
@@ -41,7 +48,7 @@ class AssessmentQuestion < ActiveRecord::Base
   serialize :question_data
 
   set_policy do
-    given{|user, session| cached_context_grants_right?(user, session, :manage_assignments) }
+    given{|user, session| self.context.grants_right?(user, session, :manage_assignments) }
     can :read and can :create and can :update and can :delete
   end
 
@@ -256,13 +263,5 @@ class AssessmentQuestion < ActiveRecord::Base
     dup
   end
 
-  def self.process_migration(*args)
-    Importers::AssessmentQuestionImporter.process_migration(*args)
-  end
-
-  def self.import_from_migration(*args)
-    Importers::AssessmentQuestionImporter.import_from_migration(*args)
-  end
-
-  scope :active, where("assessment_questions.workflow_state<>'deleted'")
+  scope :active, -> { where("assessment_questions.workflow_state<>'deleted'") }
 end

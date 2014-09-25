@@ -41,6 +41,7 @@ describe PageView do
     include_examples "cassandra page views"
     it "should store and load from cassandra" do
       expect {
+        @page_view.request_id = "abcde1"
         @page_view.save!
       }.to change { PageView::EventStream.database.execute("select count(*) from page_views").fetch_row["count"] }.by(1)
       PageView.find(@page_view.id).should == @page_view
@@ -59,10 +60,13 @@ describe PageView do
       it "should always assign the birth shard" do
         PageView.new.shard.should == Shard.birth
         pv = nil
+        u = User.create!
         @shard1.activate do
           pv = page_view_model
           pv.shard.should == Shard.birth
+          pv.user = u
           pv.save!
+          pv.read_attribute(:user_id).should == u.local_id
           pv = PageView.find(pv.request_id)
           pv.should be_present
           pv.shard.should == Shard.birth
@@ -80,6 +84,7 @@ describe PageView do
         Shard.stubs(:birth).returns(@shard1)
         @shard2.activate do
           expect {
+            @page_view.request_id = "abcde2"
             @page_view.save!
           }.to change { PageView::EventStream.database.execute("select count(*) from page_views").fetch_row["count"] }.by(1)
           PageView.find(@page_view.id).should == @page_view
@@ -190,7 +195,7 @@ describe PageView do
 
   if Canvas.redis_enabled?
     describe "active user counts" do
-      before do
+      before :once do
         Setting.set('enable_page_views', 'db')
       end
 
@@ -237,7 +242,9 @@ describe PageView do
   end
 
   describe "for_users" do
-    before :each do
+    before :once do
+      course_model
+      @page_view = PageView.new { |p| p.assign_attributes({ :url => "http://test.one/", :session_id => "phony", :context => @course, :controller => 'courses', :action => 'show', :user_request => true, :render_time => 0.01, :user_agent => 'None', :account_id => Account.default.id, :request_id => "abcde", :interaction_seconds => 5, :user => @user }, :without_protection => true) }
       @page_view.save!
     end
 
@@ -257,7 +264,7 @@ describe PageView do
   end
 
   describe '.generate' do
-    let(:params) { {'action' => 'path', 'controller' => 'some'} }
+    let(:params) { {:action => 'path', :controller => 'some'} }
     let(:session) { {:id => '42'} }
     let(:request) { stub(:url => (@url || 'host.com/some/path'), :path_parameters => params, :user_agent => 'Mozilla', :session_options => session, :method => :get, :remote_ip => '0.0.0.0', :request_method => 'GET') }
     let(:user) { User.new }
@@ -270,8 +277,8 @@ describe PageView do
 
     its(:url) { should == request.url }
     its(:user) { should == user }
-    its(:controller) { should == params['controller'] }
-    its(:action) { should == params['action'] }
+    its(:controller) { should == params[:controller] }
+    its(:action) { should == params[:action] }
     its(:session_id) { should == session[:id] }
     its(:real_user) { should == user }
     its(:user_agent) { should == request.user_agent }
@@ -304,7 +311,7 @@ describe PageView do
 
   describe ".find_all_by_id" do
     context "db-backed" do
-      before do
+      before :once do
         Setting.set('enable_page_views', 'db')
       end
 
@@ -336,47 +343,9 @@ describe PageView do
     end
   end
 
-  if CANVAS_RAILS2
-    describe ".find_some" do
-      context "db-backed" do
-        before do
-          Setting.set('enable_page_views', 'db')
-        end
-
-        it "should return the existing page view" do
-          page_views = (0..3).map { |index| page_view_model }
-          page_view_ids = page_views.map { |page_view| page_view.request_id }
-
-          PageView.find_some(page_view_ids).should == page_views
-        end
-
-        it "should raise ActiveRecord::RecordNotFound with unknown request id" do
-          pv = page_view_model
-          expect { PageView.find_some([pv.request_id, 'unknown']) }.to raise_error(ActiveRecord::RecordNotFound)
-        end
-      end
-
-      context "cassandra-backed" do
-        include_examples "cassandra page views"
-
-        it "should return the existing page view" do
-          page_views = (0..3).map { |index| page_view_model }
-          page_view_ids = page_views.map { |page_view| page_view.request_id }
-
-          PageView.find_some(page_view_ids).should == page_views
-        end
-
-        it "should raise ActiveRecord::RecordNotFound with unknown request id" do
-          pv = page_view_model
-          expect { PageView.find_some([pv.request_id, 'unknown']) }.to raise_error(ActiveRecord::RecordNotFound)
-        end
-      end
-    end
-  end
-
   describe ".find_by_id" do
     context "db-backed" do
-      before do
+      before :once do
         Setting.set('enable_page_views', 'db')
       end
 
@@ -406,7 +375,7 @@ describe PageView do
 
    describe ".find_one" do
     context "db-backed" do
-      before do
+      before :once do
         Setting.set('enable_page_views', 'db')
       end
 
@@ -436,7 +405,7 @@ describe PageView do
 
   describe ".find_for_update" do
     context "db-backed" do
-      before do
+      before :once do
         Setting.set('enable_page_views', 'db')
       end
 

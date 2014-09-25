@@ -24,7 +24,7 @@ require 'coffee-script'
 require File.expand_path(File.dirname(__FILE__) + '/helpers/custom_selenium_rspec_matchers')
 include I18nUtilities
 
-SELENIUM_CONFIG = Setting.from_config("selenium") || {}
+SELENIUM_CONFIG = ConfigFile.load("selenium") || {}
 SERVER_IP = SELENIUM_CONFIG[:server_ip] || UDPSocket.open { |s| s.connect('8.8.8.8', 1); s.addr.last }
 BIND_ADDRESS = SELENIUM_CONFIG[:bind_address] || '0.0.0.0'
 SECONDS_UNTIL_COUNTDOWN = 5
@@ -203,14 +203,7 @@ module SeleniumTestsHelperMethods
   def self.rack_app()
     app = Rack::Builder.new do
       use Rails::Rack::Debugger unless Rails.env.test?
-      if CANVAS_RAILS2
-        map '/' do
-          use Rails::Rack::Static
-          run ActionController::Dispatcher.new
-        end
-      else
-        run CanvasRails::Application
-      end
+      run CanvasRails::Application
     end.to_app
     return app
   end
@@ -291,11 +284,7 @@ shared_examples_for "all selenium tests" do
   include CustomSeleniumRspecMatchers
 
   # set up so you can use rails urls helpers in your selenium tests
-  if CANVAS_RAILS2
-    include ActionController::UrlWriter
-  else
-    include Rails.application.routes.url_helpers
-  end
+  include Rails.application.routes.url_helpers
 
   def selenium_driver;
     $selenium_driver
@@ -312,9 +301,8 @@ shared_examples_for "all selenium tests" do
   end
 
   def login_as(username = "nobody@example.com", password = "asdfasdf", expect_success = true)
-    # log out (just in case)
-    driver.navigate.to(app_host + '/logout')
-
+    destroy_session(true)
+    driver.navigate.to(app_host + '/login')
     if expect_success
       expect_new_page_load { fill_in_login_form(username, password) }
       f('#identity .logout').should be_present
@@ -336,9 +324,17 @@ shared_examples_for "all selenium tests" do
     end
   end
 
-  def destroy_session(pseudonym, real_login)
+  def destroy_session(real_login)
     if real_login
-      driver.navigate.to(app_host + '/logout')
+      logout_link = f('#identity .logout a')
+      if logout_link
+        if logout_link.displayed?
+          expect_new_page_load { logout_link.click() }
+        else
+          get '/'
+          destroy_session(true)
+        end
+      end
     else
       PseudonymSession.any_instance.unstub :session_credentials
       PseudonymSession.any_instance.unstub :record
@@ -395,7 +391,6 @@ shared_examples_for "all selenium tests" do
   end
 
   def expect_new_page_load
-    make_full_screen
     driver.execute_script("INST.still_on_old_page = true;")
     yield
     keep_trying_until { driver.execute_script("return INST.still_on_old_page;") == nil }
@@ -777,6 +772,18 @@ shared_examples_for "all selenium tests" do
     end
   end
 
+  def resize_screen_to_normal
+    w, h = driver.execute_script <<-JS
+        if (window.screen) {
+          return [window.screen.availWidth, window.screen.availHeight];
+        }
+    JS
+    if w != 1200 || h != 600
+      driver.manage.window.move_to(0, 0)
+      driver.manage.window.resize_to(1200, 600)
+    end
+  end
+
   def resize_screen_to_default
     h = driver.execute_script <<-JS
       if (window.screen) {
@@ -937,7 +944,7 @@ shared_examples_for "all selenium tests" do
     truncate_all_tables unless self.use_transactional_fixtures
   end
 
-  unless CANVAS_RAILS2 || EncryptedCookieStore.respond_to?(:test_secret)
+  unless EncryptedCookieStore.respond_to?(:test_secret)
     EncryptedCookieStore.class_eval do
       cattr_accessor :test_secret
 
@@ -956,11 +963,7 @@ shared_examples_for "all selenium tests" do
       tries ||= 3
       driver.manage.timeouts.implicit_wait = 3
       driver.manage.timeouts.script_timeout = 60
-      if CANVAS_RAILS2
-        EncryptedCookieStore.any_instance.stubs(:secret).returns(SecureRandom.hex(64))
-      else
-        EncryptedCookieStore.test_secret = SecureRandom.hex(64)
-      end
+      EncryptedCookieStore.test_secret = SecureRandom.hex(64)
       enable_forgery_protection
     rescue
       if ENV['PARALLEL_EXECS'] != nil
@@ -979,18 +982,7 @@ shared_examples_for "all selenium tests" do
   append_before (:all) do
     $selenium_driver ||= setup_selenium
     default_url_options[:host] = $app_host_and_port
-  end
-
-  append_before (:all) do
-    unless $check_screen_dimensions
-      w, h = driver.execute_script <<-JS
-        if (window.screen) {
-          return [window.screen.availWidth, window.screen.availHeight];
-        }
-      JS
-      raise("desktop dimensions (#{w}x#{h}) are too small to successfully run the selenium specs, minimum size of 1024x760 is required.") unless w >= 1024 && h >= 760
-      $check_screen_dimensions = true
-    end
+    resize_screen_to_normal
   end
 
   after(:each) do
@@ -1113,7 +1105,7 @@ shared_examples_for "in-process server selenium tests" do
       @dj_connection = Delayed::Backend::ActiveRecord::Job.connection
 
       # synchronize db connection methods for a modicum of thread safety
-      methods_to_sync = CANVAS_RAILS2 ? %w{execute} : %w{execute exec_cache exec_no_cache query}
+      methods_to_sync = %w{execute exec_cache exec_no_cache query}
       [@db_connection, @dj_connection].each do |conn|
         methods_to_sync.each do |method_name|
           if conn.respond_to?(method_name, true) && !conn.respond_to?("#{method_name}_with_synchronization", true)

@@ -19,10 +19,10 @@
 require File.expand_path(File.dirname(__FILE__) + '/../api_spec_helper')
 
 describe "AccountAuthorizationConfigs API", type: :request do
-  before do
+  before :once do
     @account = account_model(:name => 'root')
     user_with_pseudonym(:active_all => true, :account => @account)
-    @account.add_user(@user)
+    @account.account_users.create!(user: @user)
     @cas_hash = {"auth_type" => "cas", "auth_base" => "127.0.0.1"}
     @saml_hash = {'auth_type' => 'saml', 'idp_entity_id' => 'http://example.com/saml1', 'log_in_url' => 'http://example.com/saml1/sli', 'log_out_url' => 'http://example.com/saml1/slo', 'certificate_fingerprint' => '111222', 'identifier_format' => 'urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress'}
     @ldap_hash = {'auth_type' => 'ldap', 'auth_host' => '127.0.0.1', 'auth_filter' => 'filter1', 'auth_username' => 'username1', 'auth_password' => 'password1'}
@@ -203,6 +203,7 @@ describe "AccountAuthorizationConfigs API", type: :request do
       @saml_hash['change_password_url'] = nil
       @saml_hash['requested_authn_context'] = nil
       @saml_hash['login_attribute'] = 'nameid'
+      @saml_hash['unknown_user_url'] = nil
       json.should == @saml_hash
     end
 
@@ -230,6 +231,7 @@ describe "AccountAuthorizationConfigs API", type: :request do
       @cas_hash['log_in_url'] = nil
       @cas_hash['id'] = aac.id
       @cas_hash['position'] = 1
+      @cas_hash['unknown_user_url'] = nil
       json.should == @cas_hash
     end
 
@@ -366,7 +368,7 @@ describe "AccountAuthorizationConfigs API", type: :request do
   end
 
   context "discovery url" do
-    append_before do
+    before do
       @account.auth_discovery_url = "http://example.com/auth"
       @account.save!
     end

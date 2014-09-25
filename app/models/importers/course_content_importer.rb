@@ -2,10 +2,12 @@ module Importers
   class CourseContentImporter < Importer
 
     self.item_class = Course
+    Importers.register_content_importer(self)
 
     def self.process_migration_files(course, data, migration)
-      return unless data['all_files_export'] && data['all_files_export']['file_path']
-      return unless File.exist?(data['all_files_export']['file_path'])
+      data['all_files_export'] ||= {}
+      data['all_files_export']['file_path'] ||= data['all_files_zip']
+      return unless data['all_files_export']['file_path'] && File.exist?(data['all_files_export']['file_path'])
 
       course.attachment_path_id_lookup ||= {}
       course.attachment_path_id_lookup_lower ||= {}
@@ -16,7 +18,11 @@ module Importers
         course.attachment_path_id_lookup[path] = file['migration_id']
         course.attachment_path_id_lookup_lower[path.downcase] = file['migration_id']
         if migration.import_object?("attachments", file['migration_id']) || migration.import_object?("files", file['migration_id'])
-          valid_paths << path
+          if file['errored']
+            migration.add_warning(t(:file_import_warning, "File %{file} could not be found", :file => File.basename(file['path_name'])))
+          else
+            valid_paths << path
+          end
         end
       end
       valid_paths = [0] if valid_paths.empty? && params[:copy] && params[:copy][:files]
@@ -64,19 +70,18 @@ module Importers
       course.full_migration_hash = data
       course.external_url_hash = {}
       course.migration_results = []
-      course.content_migration = migration
+
       (data['web_link_categories'] || []).map{|c| c['links'] }.flatten.each do |link|
         course.external_url_hash[link['link_id']] = link
       end
       ActiveRecord::Base.skip_touch_context
-      course.imported_migration_items = []
 
       if !migration.for_course_copy?
         # These only need to be processed once
         Attachment.skip_media_object_creation do
           self.process_migration_files(course, data, migration); migration.update_import_progress(18)
           Importers::AttachmentImporter.process_migration(data, migration); migration.update_import_progress(20)
-          mo_attachments = course.imported_migration_items.find_all { |i| i.is_a?(Attachment) && i.media_entry_id.present? }
+          mo_attachments = migration.imported_migration_items_by_class(Attachment).find_all { |i| i.media_entry_id.present? }
           begin
             self.import_media_objects(mo_attachments, migration)
           rescue => e
@@ -124,6 +129,7 @@ module Importers
       end
 
       # be very explicit about draft state courses, but be liberal toward legacy courses
+      course.wiki.check_has_front_page
       if course.feature_enabled?(:draft_state) && course.wiki.has_no_front_page
         if migration.for_course_copy? && (source = migration.source_course || Course.find_by_id(migration.migration_settings[:source_course_id]))
           mig_id = CC::CCHelper.create_key(source.wiki.front_page)
@@ -138,7 +144,7 @@ module Importers
       syllabus_should_be_added = everything_selected || migration.copy_options[:syllabus_body] || migration.copy_options[:all_syllabus_body]
       if syllabus_should_be_added
         syllabus_body = data[:course][:syllabus_body] if data[:course]
-        self.import_syllabus_from_migration(course, syllabus_body) if syllabus_body
+        self.import_syllabus_from_migration(course, syllabus_body, migration) if syllabus_body
       end
 
       migration.add_warnings_for_missing_content_links
@@ -147,43 +153,55 @@ module Importers
         #Adjust dates
         if shift_options = migration.date_shift_options
           shift_options = self.shift_date_options(course, shift_options)
-          course.imported_migration_items.each do |event|
-            if event.is_a?(Assignment)
-              event.due_at = shift_date(event.due_at, shift_options)
-              event.lock_at = shift_date(event.lock_at, shift_options)
-              event.unlock_at = shift_date(event.unlock_at, shift_options)
-              event.peer_reviews_due_at = shift_date(event.peer_reviews_due_at, shift_options)
-              event.save_without_broadcasting!
-            elsif event.is_a?(DiscussionTopic)
-              event.delayed_post_at = shift_date(event.delayed_post_at, shift_options)
-              event.save_without_broadcasting!
-            elsif event.is_a?(CalendarEvent)
-              event.start_at = shift_date(event.start_at, shift_options)
-              event.end_at = shift_date(event.end_at, shift_options)
-              event.save_without_broadcasting!
-            elsif event.is_a?(Quizzes::Quiz)
-              event.due_at = shift_date(event.due_at, shift_options)
-              event.lock_at = shift_date(event.lock_at, shift_options)
-              event.unlock_at = shift_date(event.unlock_at, shift_options)
-              event.show_correct_answers_at = shift_date(event.show_correct_answers_at, shift_options)
-              event.hide_correct_answers_at = shift_date(event.hide_correct_answers_at, shift_options)
-              event.save!
-            elsif event.is_a?(ContextModule)
-              event.unlock_at = shift_date(event.unlock_at, shift_options)
-              event.start_at = shift_date(event.start_at, shift_options)
-              event.end_at = shift_date(event.end_at, shift_options)
-              event.save!
-            end
+
+          migration.imported_migration_items_by_class(Assignment).each do |event|
+            event.due_at = shift_date(event.due_at, shift_options)
+            event.lock_at = shift_date(event.lock_at, shift_options)
+            event.unlock_at = shift_date(event.unlock_at, shift_options)
+            event.peer_reviews_due_at = shift_date(event.peer_reviews_due_at, shift_options)
+            event.save_without_broadcasting!
+          end
+
+          migration.imported_migration_items_by_class(Announcement).each do |event|
+            event.delayed_post_at = shift_date(event.delayed_post_at, shift_options)
+            event.save_without_broadcasting!
+          end
+
+          migration.imported_migration_items_by_class(DiscussionTopic).each do |event|
+            event.delayed_post_at = shift_date(event.delayed_post_at, shift_options)
+            event.save_without_broadcasting!
+          end
+
+          migration.imported_migration_items_by_class(CalendarEvent).each do |event|
+            event.start_at = shift_date(event.start_at, shift_options)
+            event.end_at = shift_date(event.end_at, shift_options)
+            event.save_without_broadcasting!
+          end
+
+          migration.imported_migration_items_by_class(Quizzes::Quiz).each do |event|
+            event.due_at = shift_date(event.due_at, shift_options)
+            event.lock_at = shift_date(event.lock_at, shift_options)
+            event.unlock_at = shift_date(event.unlock_at, shift_options)
+            event.show_correct_answers_at = shift_date(event.show_correct_answers_at, shift_options)
+            event.hide_correct_answers_at = shift_date(event.hide_correct_answers_at, shift_options)
+            event.save!
+          end
+
+          migration.imported_migration_items_by_class(ContextModule).each do |event|
+            event.unlock_at = shift_date(event.unlock_at, shift_options)
+            event.start_at = shift_date(event.start_at, shift_options)
+            event.end_at = shift_date(event.end_at, shift_options)
+            event.save!
           end
 
           course.set_course_dates_if_blank(shift_options)
         end
       rescue
-        course.add_migration_warning("Couldn't adjust the due dates.", $!)
+        migration.add_warning(t(:due_dates_warning, "Couldn't adjust the due dates."), $!)
       end
       migration.progress=100
       migration.migration_settings ||= {}
-      migration.migration_settings[:imported_assets] = course.imported_migration_items.map(&:asset_string)
+      migration.migration_settings[:imported_assets] = migration.imported_migration_items.map(&:asset_string)
       migration.workflow_state = :imported
       migration.save
       ActiveRecord::Base.skip_touch_context(false)
@@ -192,15 +210,19 @@ module Importers
       else
         course.touch
       end
-      course.imported_migration_items
+
+      Auditors::Course.record_copied(migration.source_course, course, migration.user, source: migration.initiated_source)
+      migration.imported_migration_items
     end
 
-    def self.import_syllabus_from_migration(course, syllabus_body)
+    def self.import_syllabus_from_migration(course, syllabus_body, migration)
       missing_links = []
-      course.syllabus_body = ImportedHtmlConverter.convert(syllabus_body, course, {:missing_links => missing_links})
-      course.content_migration.add_missing_content_links(:class => course.class.to_s,
-                                                       :id => course.id, :field => "syllabus", :missing_links => missing_links,
-                                                       :url => "/#{course.class.to_s.underscore.pluralize}/#{course.id}/assignments/syllabus")
+      course.syllabus_body = ImportedHtmlConverter.convert(syllabus_body, course, migration) do |warn, link|
+        missing_links << link if warn == :missing_link
+      end
+      migration.add_missing_content_links(:class => course.class.to_s,
+        :id => course.id, :field => "syllabus", :missing_links => missing_links,
+        :url => "/#{course.class.to_s.underscore.pluralize}/#{course.id}/assignments/syllabus")
     end
 
     def self.import_settings_from_migration(course, data, migration)
@@ -225,7 +247,7 @@ module Importers
         end
         course.tab_configuration = tab_config
       end
-      if settings[:storage_quota] && ( migration.for_course_copy? || course.account.grants_right?(migration.user, nil, :manage_courses))
+      if settings[:storage_quota] && ( migration.for_course_copy? || course.account.grants_right?(migration.user, :manage_courses))
         course.storage_quota = settings[:storage_quota]
       end
       atts = Course.clonable_attributes
@@ -239,19 +261,20 @@ module Importers
           if gs = course.grading_standards.find_by_migration_id(settings[:grading_standard_identifier_ref])
             course.grading_standard = gs
           else
-            migration.add_warning("Couldn't find copied grading standard for the course.")
+            migration.add_warning(t(:copied_grading_standard_warning, "Couldn't find copied grading standard for the course."))
           end
         elsif settings[:grading_standard_id].present?
           if gs = GradingStandard.standards_for(course).find_by_id(settings[:grading_standard_id])
             course.grading_standard = gs
           else
-            migration.add_warning("Couldn't find account grading standard for the course.")
+            migration.add_warning(t(:account_grading_standard_warning,"Couldn't find account grading standard for the course." ))
           end
         end
       end
     end
 
     def self.shift_date_options(course, options={})
+      return({remove_dates: true}) if Canvas::Plugin.value_to_boolean(options[:remove_dates])
       result = {}
       result[:old_start_date] = Date.parse(options[:old_start_date]) rescue course.real_start_date
       result[:old_end_date] = Date.parse(options[:old_end_date]) rescue course.real_end_date
@@ -277,6 +300,7 @@ module Importers
 
     def self.shift_date(time, options={})
       return nil unless time
+      return nil if options[:remove_dates]
       time_zone = options[:time_zone] || Time.zone
       Time.use_zone time_zone do
         time = ActiveSupport::TimeWithZone.new(time.utc, Time.zone)
@@ -291,7 +315,7 @@ module Importers
         old_event_diff = old_date - old_start_date
         old_event_percent = old_full_diff > 0 ? old_event_diff.to_f / old_full_diff.to_f : 0
         new_full_diff = new_end_date - new_start_date
-        new_event_diff = (new_full_diff.to_f * old_event_percent).to_i
+        new_event_diff = (new_full_diff.to_f * old_event_percent).round
         new_date = new_start_date + new_event_diff
         options[:day_substitutions] ||= {}
         options[:day_substitutions][old_date.wday.to_s] ||= old_date.wday.to_s

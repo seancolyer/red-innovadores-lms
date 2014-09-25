@@ -30,9 +30,12 @@ describe AttachmentHelper do
     "expected_scribd_render_url"
   end
 
-  before do
+  before :once do
     course_with_student
     @att = attachment_model(:context => @user)
+  end
+
+  before :each do
     @att.stubs(:scribdable?).returns(true)
     @att.stubs(:scribd_doc).returns({})
   end
@@ -61,5 +64,23 @@ describe AttachmentHelper do
     attrs = doc_preview_attributes(@att)
     attrs.should be_include('data-attachment_scribd_render_url=expected_scribd_render_url')
     attrs.should_not be_include('data-attachment_preview_processing')
+  end
+
+  it "should return a valid crocodoc session url" do
+    @current_user = @student
+    @att.stubs(:crocodoc_available?).returns(true)
+    attrs = doc_preview_attributes(@att)
+    attrs.should match /crocodoc_session/
+    attrs.should match /#{@current_user.id}/
+    attrs.should match /#{@att.id}/
+  end
+
+  it "should return a valid canvadoc session url" do
+    @current_user = @student
+    @att.stubs(:canvadocable?).returns(true)
+    attrs = doc_preview_attributes(@att)
+    attrs.should match /canvadoc_session/
+    attrs.should match /#{@current_user.id}/
+    attrs.should match /#{@att.id}/
   end
 end

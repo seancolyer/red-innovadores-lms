@@ -21,9 +21,9 @@ require File.expand_path(File.dirname(__FILE__) + '/../file_uploads_spec_helper'
 
 describe 'Submissions API', type: :request do
 
-  before {
+  before :each do
     HostUrl.stubs(:file_host_with_shard).returns(["www.example.com", Shard.default])
-  }
+  end
 
   def submit_homework(assignment, student, opts = {:body => "test!"})
     @submit_homework_time ||= Time.zone.at(0)
@@ -75,7 +75,7 @@ describe 'Submissions API', type: :request do
   end
 
   describe "using section ids" do
-    before do
+    before :once do
       @student1 = user(:active_all => true)
       course_with_teacher(:active_all => true)
       @default_section = @course.default_section
@@ -267,8 +267,8 @@ describe 'Submissions API', type: :request do
     end
 
     context 'submission comment attachments' do
-      before do
-        course_with_student_logged_in(active_all: true)
+      before :once do
+        course_with_student(active_all: true)
         @assignment = @course.assignments.create! name: "blah",
           submission_types: "online_upload"
         @attachment = Attachment.create! context: @assignment,
@@ -364,7 +364,7 @@ describe 'Submissions API', type: :request do
     json['discussion_entries'].should be_nil
   end
 
-  it "should return student discussion entries from child topics for discussion_topic group assignments" do
+  it "should return student discussion entries from child topics for group discussion_topic assignments" do
     @student = user(:active_all => true)
     course_with_teacher(:active_all => true)
     @course.enroll_student(@student).accept!
@@ -372,7 +372,7 @@ describe 'Submissions API', type: :request do
     @group = @course.groups.create(:name => "Group", :group_category => group_category)
     @group.add_user(@student)
     @context = @course
-    @assignment = factory_with_protected_attributes(@course.assignments, {:title => 'assignment1', :submission_types => 'discussion_topic', :discussion_topic => discussion_topic_model, :group_category => @group.group_category})
+    @assignment = factory_with_protected_attributes(@course.assignments, {:title => 'assignment1', :submission_types => 'discussion_topic', :discussion_topic => discussion_topic_model(:group_category => @group.group_category)})
     @topic.refresh_subtopics # since the DJ won't happen in time
     @child_topic = @group.discussion_topics.find_by_root_topic_id(@topic.id)
 
@@ -903,8 +903,10 @@ describe 'Submissions API', type: :request do
 
     course_with_teacher(:active_all => true)
 
-    @course.enroll_student(student1).accept!
-    @course.enroll_student(student2).accept!
+    enrollment1 = @course.enroll_student(student1)
+    enrollment1.accept!
+    enrollment2 = @course.enroll_student(student2)
+    enrollment2.accept!
 
     json = api_call(:get,
           "/api/v1/courses/#{@course.id}/students/submissions.json",
@@ -914,10 +916,13 @@ describe 'Submissions API', type: :request do
     json.sort_by { |h| h['user_id'] }.should == [
       {
         'user_id' => student1.id,
+        "section_id" => enrollment1.course_section_id,
         'submissions' => [],
       },
       {
         'user_id' => student2.id,
+        "section_id" => enrollment2.course_section_id,
+        'integration_id' => nil,
         'submissions' => [],
       },
     ]
@@ -927,6 +932,25 @@ describe 'Submissions API', type: :request do
           { :controller => 'submissions_api', :action => 'for_students',
             :format => 'json', :course_id => @course.to_param },
           { :student_ids => [student1.to_param, student2.to_param] })
+    json.should == []
+  end
+
+  it "should return integration_id for user and assignment" do
+    student1 = user(:active_all => true)
+    student2 = user_with_pseudonym(:active_all => true)
+    student2.pseudonym.update_attribute(:sis_user_id, 'my-student-id')
+    student2.pseudonym.update_attribute(:integration_id, 'xyz')
+
+    course_with_teacher(:active_all => true)
+
+    @course.enroll_student(student1).accept!
+    @course.enroll_student(student2).accept!
+    
+    json = api_call(:get,
+          "/api/v1/courses/#{@course.id}/students/submissions.json",
+          { :controller => 'submissions_api', :action => 'for_students',
+            :format => 'json', :course_id => @course.to_param },
+          { :student_ids => 'all' })
     json.should == []
   end
 
@@ -1138,7 +1162,7 @@ describe 'Submissions API', type: :request do
   end
 
   describe "for_students non-admin" do
-    before do
+    before :once do
       course_with_student :active_all => true
       @student1 = @student
       @student2 = student_in_course(:active_all => true).user
@@ -1241,7 +1265,7 @@ describe 'Submissions API', type: :request do
     end
 
     context "observers" do
-      before do
+      before :once do
         @observer = user :active_all => true
         @course.enroll_user(@observer, 'ObserverEnrollment', :associated_user_id => @student1.id).accept!
         @course.enroll_user(@observer, 'ObserverEnrollment', :allow_multiple_enrollments => true, :associated_user_id => @student2.id).accept!
@@ -1278,7 +1302,7 @@ describe 'Submissions API', type: :request do
       end
 
       context "observer that is a student" do
-        before do
+        before :once do
           @course.enroll_student(@observer, :allow_multiple_enrollments => true).accept!
           submit_homework(@assignment1, @observer)
           @assignment1.grade_student(@observer, grade: 5)
@@ -1986,7 +2010,7 @@ describe 'Submissions API', type: :request do
   end
 
   context "create" do
-    before do
+    before :once do
       course_with_student(:active_all => true)
       assignment_model(:course => @course, :submission_types => "online_url", :points_possible => 12)
       @url = "/api/v1/courses/#{@course.id}/assignments/#{@assignment.id}/submissions"
@@ -2092,7 +2116,7 @@ describe 'Submissions API', type: :request do
     end
 
     context "submission file uploads" do
-      before do
+      before :once do
         @assignment.update_attributes(:submission_types => 'online_upload')
         @student1 = @student
         course_with_student(:course => @course)
@@ -2134,7 +2158,7 @@ describe 'Submissions API', type: :request do
   end
 
   context "draft assignments" do
-    before do
+    before :once do
       course_with_teacher(:active_all => true)
       student_in_course(:active_all => true)
       @a2 = @course.assignments.create!({:title => 'assignment2'})
