@@ -356,12 +356,12 @@ class CoursesController < ApplicationController
           enrollments = @current_user.cached_current_enrollments(preload_courses: true)
         end
 
-          if params[:enrollment_role]
-            enrollments = enrollments.reject { |e| (e.role_name || e.class.name) != params[:enrollment_role] }
-          elsif params[:enrollment_type]
-            e_type = "#{params[:enrollment_type].capitalize}Enrollment"
-            enrollments = enrollments.reject { |e| e.class.name != e_type }
-          end
+        if params[:enrollment_role]
+          enrollments = enrollments.reject { |e| (e.role_name || e.class.name) != params[:enrollment_role] }
+        elsif params[:enrollment_type]
+          e_type = "#{params[:enrollment_type].capitalize}Enrollment"
+          enrollments = enrollments.reject { |e| e.class.name != e_type }
+        end
 
         if value_to_boolean(params[:current_domain_only])
           enrollments = enrollments.select { |e| e.root_account_id == @domain_root_account.id }
@@ -372,18 +372,17 @@ class CoursesController < ApplicationController
 
         includes = Set.new(Array(params[:include]))
 
-          # We only want to return the permissions for single courses and not lists of courses.
-          includes.delete 'permissions'
+        # We only want to return the permissions for single courses and not lists of courses.
+        includes.delete 'permissions'
 
-          hash = []
-          enrollments_by_course = enrollments.group_by(&:course_id).values
-          enrollments_by_course = Api.paginate(enrollments_by_course, self, api_v1_courses_url) if api_request?
-          enrollments_by_course.each do |course_enrollments|
-            course = course_enrollments.first.course
-            hash << course_json(course, @current_user, session, includes, course_enrollments)
-          end
-          render :json => hash
+        hash = []
+        enrollments_by_course = enrollments.group_by(&:course_id).values
+        enrollments_by_course = Api.paginate(enrollments_by_course, self, api_v1_courses_url) if api_request?
+        enrollments_by_course.each do |course_enrollments|
+          course = course_enrollments.first.course
+          hash << course_json(course, @current_user, session, includes, course_enrollments)
         end
+        render :json => hash
       }
     end
   end
