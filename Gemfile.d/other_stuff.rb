@@ -124,3 +124,7 @@ gem 'paginated_collection', :path => 'gems/paginated_collection'
 gem 'twitter', :path => 'gems/twitter'
 gem 'utf8_cleaner', :path => 'gems/utf8_cleaner'
 gem 'workflow', :path => 'gems/workflow'
+
+group :production do
+  gem 'unicorn'
+end
