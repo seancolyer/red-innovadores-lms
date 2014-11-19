@@ -304,8 +304,9 @@ class CalendarEventsApiController < ApplicationController
 
     scope = @type == :assignment ? assignment_scope : calendar_event_scope
     events = Api.paginate(scope, self, api_v1_calendar_events_url)
-    CalendarEvent.send(:preload_associations, events, :child_events) if @type == :event
+    ActiveRecord::Associations::Preloader.new(events, :child_events).run if @type == :event
     events = apply_assignment_overrides(events) if @type == :assignment
+    mark_submitted_assignments(@current_user, events) if @type == :assignment
 
     if @errors.empty?
       render :json => events.map { |event| event_json(event, @current_user, session) }
@@ -700,7 +701,7 @@ class CalendarEventsApiController < ApplicationController
         @context_codes += AppointmentGroup.
           reservable_by(@current_user).
           intersecting(@start_date, @end_date).
-          find_all_by_id(group_codes).
+          where(id: group_codes).
           map(&:asset_string)
       end
       # include manageable appointment group events for the specified contexts
@@ -822,6 +823,15 @@ class CalendarEventsApiController < ApplicationController
     end
 
     events
+  end
+
+  def mark_submitted_assignments(user, assignments)
+    submitted_ids = Submission.where("submission_type IS NOT NULL").
+      where(user_id: user, assignment_id: assignments).
+      pluck(:assignment_id)
+    assignments.each do |assignment|
+      assignment.user_submitted = submitted_ids.include? assignment.id
+    end
   end
 
   def manageable_appointment_group_codes

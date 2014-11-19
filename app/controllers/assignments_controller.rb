@@ -36,6 +36,8 @@ class AssignmentsController < ApplicationController
 
     if authorized_action(@context, @current_user, :read)
       return unless tab_enabled?(@context.class::TAB_ASSIGNMENTS)
+      log_asset_access("assignments:#{@context.asset_string}", 'assignments', 'other')
+
       add_crumb(t('#crumbs.assignments', "Assignments"), named_context_url(@context, :context_assignments_url))
 
       # It'd be nice to do this as an after_create, but it's not that simple
@@ -113,7 +115,9 @@ class AssignmentsController < ApplicationController
     end
     if authorized_action(@assignment, @current_user, :read)
 
-      if @context.feature_enabled?(:differentiated_assignments) && @current_user && @assignment && !@assignment.visible_to_user?(@current_user)
+      if (da_on = @context.feature_enabled?(:differentiated_assignments)) &&
+           @current_user && @assignment &&
+           !@assignment.visible_to_user?(@current_user, differentiated_assignments: da_on)
         respond_to do |format|
           flash[:error] = t 'notices.assignment_not_available', "The assignment you requested is not available to your course section."
           format.html { redirect_to named_context_url(@context, :context_assignments_url) }
@@ -149,9 +153,9 @@ class AssignmentsController < ApplicationController
       end
 
       if @assignment.grants_right?(@current_user, session, :read_own_submission) && @context.grants_right?(@current_user, session, :read_grades)
-        @current_user_submission = @assignment.submissions.find_by_user_id(@current_user.id) if @current_user
+        @current_user_submission = @assignment.submissions.where(user_id: @current_user).first if @current_user
         @current_user_submission = nil if @current_user_submission && !@current_user_submission.grade && !@current_user_submission.submission_type
-        @current_user_rubric_assessment = @assignment.rubric_association.rubric_assessments.find_by_user_id(@current_user.id) if @current_user && @assignment.rubric_association
+        @current_user_rubric_assessment = @assignment.rubric_association.rubric_assessments.where(user_id: @current_user).first if @current_user && @assignment.rubric_association
         @current_user_submission.send_later(:context_module_action) if @current_user_submission
       end
 
@@ -248,7 +252,7 @@ class AssignmentsController < ApplicationController
   def remind_peer_review
     @assignment = @context.assignments.active.find(params[:assignment_id])
     if authorized_action(@assignment, @current_user, :grade)
-      @request = AssessmentRequest.find_by_id(params[:id]) if params[:id].present?
+      @request = AssessmentRequest.where(id: params[:id]).first if params[:id].present?
       respond_to do |format|
         if @request.asset.assignment == @assignment && @request.send_reminder!
           format.html { redirect_to named_context_url(@context, :context_assignment_peer_reviews_url) }
@@ -264,7 +268,7 @@ class AssignmentsController < ApplicationController
   def delete_peer_review
     @assignment = @context.assignments.active.find(params[:assignment_id])
     if authorized_action(@assignment, @current_user, :grade)
-      @request = AssessmentRequest.find_by_id(params[:id]) if params[:id].present?
+      @request = AssessmentRequest.where(id: params[:id]).first if params[:id].present?
       respond_to do |format|
         if @request.asset.assignment == @assignment && @request.destroy
           format.html { redirect_to named_context_url(@context, :context_assignment_peer_reviews_url) }

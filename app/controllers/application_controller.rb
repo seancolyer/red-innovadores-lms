@@ -47,8 +47,8 @@ class ApplicationController < ActionController::Base
   before_filter :set_user_id_header
   before_filter :set_time_zone
   before_filter :set_page_view
-  before_filter :refresh_cas_ticket
   before_filter :require_reacceptance_of_terms
+  before_filter :clear_policy_cache
   after_filter :log_page_view
   after_filter :discard_flash_if_xhr
   after_filter :cache_buster
@@ -107,7 +107,8 @@ class ApplicationController < ActionController::Base
         :files_domain => HostUrl.file_host(@domain_root_account || Account.default, request.host_with_port),
         :DOMAIN_ROOT_ACCOUNT_ID => @domain_root_account.try(:global_id),
         :SETTINGS => {
-          open_registration: @domain_root_account.try(:open_registration?)
+          open_registration: @domain_root_account.try(:open_registration?),
+          use_high_contrast: @current_user.try(:prefers_high_contrast?)
         }
       }
       @js_env[:lolcalize] = true if ENV['LOLCALIZE']
@@ -264,7 +265,7 @@ class ApplicationController < ActionController::Base
     if context.is_a?(UserProfile)
       name = name.to_s.sub(/context/, "profile")
     else
-      klass = context.class.base_ar_class
+      klass = context.class.base_class
       name = name.to_s.sub(/context/, klass.name.underscore)
       opts.unshift(context)
     end
@@ -441,20 +442,20 @@ class ApplicationController < ActionController::Base
           end
           session[:enrollment_uuid_count] += 1
         end
-        @context_enrollment = @context.enrollments.find_all_by_user_id(@current_user.id).sort_by{|e| [e.state_sortable, e.rank_sortable, e.id] }.first if @context && @current_user
+        @context_enrollment = @context.enrollments.where(user_id: @current_user).sort_by{|e| [e.state_sortable, e.rank_sortable, e.id] }.first if @context && @current_user
         @context_membership = @context_enrollment
       elsif params[:account_id] || (self.is_a?(AccountsController) && params[:account_id] = params[:id])
         @context = api_find(Account, params[:account_id])
         params[:context_id] = @context.id
         params[:context_type] = "Account"
-        @context_enrollment = @context.account_users.find_by_user_id(@current_user.id) if @context && @current_user
+        @context_enrollment = @context.account_users.where(user_id: @current_user.id).first if @context && @current_user
         @context_membership = @context_enrollment
         @account = @context
       elsif params[:group_id]
         @context = api_find(Group.active, params[:group_id])
         params[:context_id] = params[:group_id]
         params[:context_type] = "Group"
-        @context_enrollment = @context.group_memberships.find_by_user_id(@current_user.id) if @context && @current_user
+        @context_enrollment = @context.group_memberships.where(user_id: @current_user).first if @context && @current_user
         @context_membership = @context_enrollment
       elsif params[:user_id] || (self.is_a?(UsersController) && params[:user_id] = params[:id])
         @context = api_find(User, params[:user_id])
@@ -709,7 +710,7 @@ class ApplicationController < ActionController::Base
     @context = nil
     @problem = nil
     if pieces[0] == "enrollment"
-      @enrollment = Enrollment.find_by_uuid(pieces[1]) if pieces[1]
+      @enrollment = Enrollment.where(uuid: pieces[1]).first if pieces[1]
       @context_type = "Course"
       if !@enrollment
         @problem = t "#application.errors.mismatched_verification_code", "The verification code does not match any currently enrolled user."
@@ -719,7 +720,7 @@ class ApplicationController < ActionController::Base
       @context = @enrollment.course unless @problem
       @current_user = @enrollment.user unless @problem
     elsif pieces[0] == 'group_membership'
-      @membership = GroupMembership.active.find_by_uuid(pieces[1]) if pieces[1]
+      @membership = GroupMembership.active.where(uuid: pieces[1]).first if pieces[1]
       @context_type = "Group"
       if !@membership
         @problem = t "#application.errors.mismatched_verification_code", "The verification code does not match any currently enrolled user."
@@ -732,7 +733,7 @@ class ApplicationController < ActionController::Base
       @context_type = pieces[0].classify
       if Context::ContextTypes.const_defined?(@context_type)
         @context_class = Context::ContextTypes.const_get(@context_type)
-        @context = @context_class.find_by_uuid(pieces[1]) if pieces[1]
+        @context = @context_class.where(uuid: pieces[1]).first if pieces[1]
       end
       if !@context
         @problem = t "#application.errors.invalid_verification_code", "The verification code is invalid."
@@ -790,17 +791,15 @@ class ApplicationController < ActionController::Base
     end
   end
 
-  def refresh_cas_ticket
-    if session[:cas_session] && @current_pseudonym
-      @current_pseudonym.claim_cas_ticket(session[:cas_session])
-    end
-  end
-
   def require_reacceptance_of_terms
     if session[:require_terms] && !api_request? && request.get?
       render :template => "shared/terms_required", :layout => "application", :status => :unauthorized
       false
     end
+  end
+
+  def clear_policy_cache
+    AdheresToPolicy::Cache.clear
   end
 
   def generate_page_view
@@ -823,9 +822,8 @@ class ApplicationController < ActionController::Base
   end
 
   def update_enrollment_last_activity_at
-    if @context.is_a?(Course) && @context_enrollment
-      @context_enrollment.record_recent_activity
-    end
+    activity = Enrollment::RecentActivity.new(@context_enrollment, @context)
+    activity.record_for_access(response)
   end
 
   # Asset accesses are used for generating usage statistics.  This is how
@@ -863,7 +861,7 @@ class ApplicationController < ActionController::Base
       # it's not an update because if the page_view already existed, we don't want to
       # double-count it as multiple views when it's really just a single view.
       if @current_user && @accessed_asset && (@accessed_asset[:level] == 'participate' || !@page_view_update)
-        @access = AssetUserAccess.find_or_initialize_by_user_id_and_asset_code(@current_user.id, @accessed_asset[:code])
+        @access = AssetUserAccess.where(user_id: @current_user.id, asset_code: @accessed_asset[:code]).first_or_initialize
         @accessed_asset[:level] ||= 'view'
         access_context = @context.is_a?(UserProfile) ? @context.user : @context
         @access.log access_context, @accessed_asset
@@ -947,7 +945,7 @@ class ApplicationController < ActionController::Base
       type = '404' if status == '404 Not Found'
 
       unless exception.respond_to?(:skip_error_report?) && exception.skip_error_report?
-        error = ErrorReport.log_exception(type, exception, {
+        error_info = {
           :url => request.url,
           :user => @current_user,
           :user_agent => request.headers['User-Agent'],
@@ -955,7 +953,15 @@ class ApplicationController < ActionController::Base
           :account => @domain_root_account,
           :request_method => request.request_method_symbol,
           :format => request.format,
-        }.merge(ErrorReport.useful_http_env_stuff_from_request(request)))
+        }.merge(ErrorReport.useful_http_env_stuff_from_request(request))
+
+        error = if @domain_root_account
+          @domain_root_account.shard.activate do
+            ErrorReport.log_exception(type, exception, error_info)
+          end
+        else
+          ErrorReport.log_exception(type, exception, error_info)
+        end
       end
 
       if api_request?
@@ -1098,6 +1104,7 @@ class ApplicationController < ActionController::Base
       end
     end
     Rails.logger.warn("developer_key id: #{@developer_key.id}") if @developer_key
+    return true
   end
 
   def form_authenticity_token
@@ -1130,9 +1137,9 @@ class ApplicationController < ActionController::Base
     return if @page || !@page_name
 
     if params[:action] != 'create'
-      @page = @wiki.wiki_pages.not_deleted.find_by_url(@page_name.to_s) ||
-              @wiki.wiki_pages.not_deleted.find_by_url(@page_name.to_s.to_url) ||
-              @wiki.wiki_pages.not_deleted.find_by_id(@page_name.to_i)
+      @page = @wiki.wiki_pages.not_deleted.where(url: @page_name.to_s).first ||
+              @wiki.wiki_pages.not_deleted.where(url: @page_name.to_s.to_url).first ||
+              @wiki.wiki_pages.not_deleted.where(id: @page_name.to_i).first
     end
 
     unless @page
@@ -1166,6 +1173,7 @@ class ApplicationController < ActionController::Base
     elsif tag.content_type == 'ExternalUrl'
       @tag = tag
       @module = tag.context_module
+      log_asset_access(@tag, "external_urls", "external_urls")
       tag.context_module_action(@current_user, :read) unless tag.locked_for? @current_user
       render :template => 'context_modules/url_show'
     elsif tag.content_type == 'ContextExternalTool'
@@ -1185,7 +1193,7 @@ class ApplicationController < ActionController::Base
         flash[:error] = t "#application.errors.invalid_external_tool", "Couldn't find valid settings for this link"
         redirect_to named_context_url(context, error_redirect_symbol)
       else
-        return unless require_user
+        log_asset_access(@tool, "external_tools", "external_tools")
         @opaque_id = @tool.opaque_identifier_for(@tag)
 
         @lti_launch = Lti::Launch.new
@@ -1221,6 +1229,7 @@ class ApplicationController < ActionController::Base
         end
 
         if @assignment
+          return unless require_user
           add_crumb(@resource_title)
           @prepend_template = 'assignments/description'
           @lti_launch.params = adapter.generate_post_payload_for_assignment(@assignment, lti_grade_passback_api_url(@tool), blti_legacy_grade_passback_api_url(@tool))
@@ -1327,7 +1336,7 @@ class ApplicationController < ActionController::Base
         opts[:inline] = 1
       end
 
-      if @context && Attachment.relative_context?(@context.class.base_ar_class) && @context == attachment.context
+      if @context && Attachment.relative_context?(@context.class.base_class) && @context == attachment.context
         # so yeah, this is right. :inline=>1 wants :download=>1 to go along with
         # it, so we're setting :download=>1 *because* we want to display inline.
         opts[:download] = 1 unless download
@@ -1369,10 +1378,6 @@ class ApplicationController < ActionController::Base
         !!CanvasKaltura::ClientV3.config
       elsif feature == :web_conferences
         !!WebConference.config
-      elsif feature == :scribd
-        !!ScribdAPI.config
-      elsif feature == :scribd_html5
-        ScribdAPI.config && ScribdAPI.config[:enable_html5_viewer]
       elsif feature == :crocodoc
         !!Canvas::Crocodoc.config
       elsif feature == :lockdown_browser
@@ -1479,7 +1484,7 @@ class ApplicationController < ActionController::Base
   helper_method :user_content
 
   def find_bank(id, check_context_chain=true)
-    bank = @context.assessment_question_banks.active.find_by_id(id) || @current_user.assessment_question_banks.active.find_by_id(id)
+    bank = @context.assessment_question_banks.active.where(id: id).first || @current_user.assessment_question_banks.active.where(id: id).first
     if bank
       (block_given? ?
         authorized_action(bank, @current_user, :read) :
@@ -1488,7 +1493,7 @@ class ApplicationController < ActionController::Base
       (block_given? ?
         authorized_action(@context, @current_user, :read_question_banks) :
         @context.grants_right?(@current_user, session, :read_question_banks)) or return nil
-      bank = @context.inherited_assessment_question_banks.find_by_id(id)
+      bank = @context.inherited_assessment_question_banks.where(id: id).first
     end
     yield if block_given? && (@bank = bank)
     bank
@@ -1647,7 +1652,7 @@ class ApplicationController < ActionController::Base
         flash.delete(:info)
         notices << {:type => 'info', :content => info, :icon => 'info'}
       end
-      if notice = (flash[:html_notice] ? flash[:html_notice].html_safe : flash[:notice])
+      if notice = (flash[:html_notice] ? {html: flash[:html_notice]} : flash[:notice])
         if flash[:html_notice]
           flash.delete(:html_notice)
         else
@@ -1775,7 +1780,7 @@ class ApplicationController < ActionController::Base
     ## docs for masqueraders earlier in the request
     if logged_in_user
       service_token, service_secret = Rails.cache.fetch(['google_docs_tokens', logged_in_user].cache_key) do
-        service = logged_in_user.user_services.find_by_service("google_docs")
+        service = logged_in_user.user_services.where(service: "google_docs").first
         service && [service.token, service.secret]
       end
       raise GoogleDocs::NoTokenError unless service_token && service_secret
@@ -1789,10 +1794,14 @@ class ApplicationController < ActionController::Base
 
   def twitter_connection
     if @current_user
-      service = @current_user.user_services.find_by_service("twitter")
+      service = @current_user.user_services.where(service: "twitter").first
       return Twitter::Connection.new(service.token, service.secret)
     else
       return Twitter::Connection.new(session[:oauth_twitter_access_token_token], session[:oauth_twitter_access_token_secret])
     end
+  end
+
+  def self.region
+    nil
   end
 end

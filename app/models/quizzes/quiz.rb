@@ -42,12 +42,23 @@ class Quizzes::Quiz < ActiveRecord::Base
   attr_readonly :context_id, :context_type
   attr_accessor :notify_of_update
 
+  # @property [Fixnum] submission_question_index
+  # @private
+  #
+  # A counter used in generating question names for students based on the
+  # position of the question within the quiz_data set.
+  #
+  # See #generate_submission
+  # See #generate_submission_question
+  attr_readonly :submission_question_index
+
   has_many :quiz_questions, :dependent => :destroy, :order => 'position', class_name: 'Quizzes::QuizQuestion'
   has_many :quiz_submissions, :dependent => :destroy, :class_name => 'Quizzes::QuizSubmission'
   has_many :quiz_groups, :dependent => :destroy, :order => 'position', class_name: 'Quizzes::QuizGroup'
   has_many :quiz_statistics, :class_name => 'Quizzes::QuizStatistics', :order => 'created_at'
   has_many :attachments, :as => :context, :dependent => :destroy
   has_many :quiz_regrades, class_name: 'Quizzes::QuizRegrade'
+  has_many :quiz_student_visibilities
   belongs_to :context, :polymorphic => true
   validates_inclusion_of :context_type, :allow_nil => true, :in => ['Course']
   belongs_to :assignment
@@ -67,7 +78,7 @@ class Quizzes::Quiz < ActiveRecord::Base
     :anonymous_submissions, :assignment_group_id, :hide_results, :ip_filter,
     :require_lockdown_browser, :require_lockdown_browser_for_results,
     :one_question_at_a_time, :cant_go_back, :show_correct_answers_at,
-    :hide_correct_answers_at, :require_lockdown_browser_monitor, 
+    :hide_correct_answers_at, :require_lockdown_browser_monitor,
     :lockdown_browser_monitor_data, :only_visible_to_overrides
   ]
 
@@ -552,7 +563,7 @@ class Quizzes::Quiz < ActiveRecord::Base
       if q[:pick_count]
         question_count += q[:actual_pick_count] || q[:pick_count]
       else
-        question_count += 1 unless q[:question_type] == "text_only_question"
+        question_count += 1 unless q[:question_type] == Quizzes::QuizQuestion::TEXT_ONLY
       end
     end
     question_count || 0
@@ -574,7 +585,7 @@ class Quizzes::Quiz < ActiveRecord::Base
 
       if val[:answers]
         val[:answers] = prepare_answers(val)
-        val[:matches] = val[:matches].sort_by { |m| m[:text] || ::CanvasSort::First } if val[:matches]
+        val[:matches] = prepare_matches(val) if val[:matches]
       elsif val[:questions] # It's a Quizzes::QuizGroup
         if val[:assessment_question_bank_id]
           # It points to a question bank
@@ -584,7 +595,7 @@ class Quizzes::Quiz < ActiveRecord::Base
           val[:questions].each do |question|
             if question[:answers]
               question[:answers] = prepare_answers(question)
-              question[:matches] = question[:matches].sort_by { |m| m[:text] || ::CanvasSort::First } if question[:matches]
+              question[:matches] = prepare_matches(question) if question[:matches]
             end
             questions << question
           end
@@ -607,11 +618,28 @@ class Quizzes::Quiz < ActiveRecord::Base
   end
 
   def generate_submission_question(q)
-    @idx ||= 1
-    q[:name] = t '#quizzes.quiz.question_name_counter', "Question %{question_number}", :question_number => @idx
-    if q[:question_type] == 'text_only_question'
+    @submission_question_index = 0 if @submission_question_index.nil?
+
+    unless q[:question_type] == Quizzes::QuizQuestion::TEXT_ONLY
+      @submission_question_index += 1
+    end
+
+    self.class.decorate_question_for_submission(q, @submission_question_index)
+  end
+
+  # TODO: could this stop mutating the question object and instead return the
+  # decorated version?
+  #
+  # this currently has too many side-effects: on quiz_data, @stored_questions,
+  # and (what we really want) a submissions's quiz_data...
+  #
+  # anyway if ur wondering why any of these fields are being modified in a spec
+  # when you are just innocently calling Quiz#generate_submission, you know why
+  def self.decorate_question_for_submission(q, position)
+    q[:name] = t '#quizzes.quiz.question_name_counter', "Question %{question_number}", :question_number => position
+
+    if q[:question_type] == Quizzes::QuizQuestion::TEXT_ONLY
       q[:name] = t '#quizzes.quiz.default_text_only_question_name', "Spacer"
-      @idx -= 1
     elsif q[:question_type] == 'fill_in_multiple_blanks_question'
       text = q[:question_text]
       variables = q[:answers].map { |a| a[:blank_id] }.uniq
@@ -650,7 +678,6 @@ class Quizzes::Quiz < ActiveRecord::Base
       q[:question_text] = text
     end
     q[:question_name] = q[:name]
-    @idx += 1
     q
   end
 
@@ -661,7 +688,7 @@ class Quizzes::Quiz < ActiveRecord::Base
     submission.retake
     submission.attempt = (submission.attempt + 1) rescue 1
     user_questions = []
-    @idx = 1
+    @submission_question_index = 0
     @stored_questions = nil
     @submission_questions = self.stored_questions
     if preview
@@ -672,14 +699,14 @@ class Quizzes::Quiz < ActiveRecord::Base
     @submission_questions.each do |q|
       if q[:pick_count] #Quizzes::QuizGroup
         if q[:assessment_question_bank_id]
-          bank = ::AssessmentQuestionBank.find_by_id(q[:assessment_question_bank_id]) if q[:assessment_question_bank_id].present?
+          bank = ::AssessmentQuestionBank.where(id: q[:assessment_question_bank_id]).first if q[:assessment_question_bank_id].present?
           if bank
             questions = bank.select_for_submission(q[:pick_count], exclude_ids)
             questions = questions.map { |aq| aq.data }
             questions.each do |question|
               if question[:answers]
                 question[:answers] = prepare_answers(question)
-                question[:matches] = question[:matches].sort_by { |m| m[:text] || ::CanvasSort::First } if question[:matches]
+                question[:matches] = prepare_matches(question) if question[:matches]
               end
               question[:points_possible] = q[:question_points]
               question[:published_at] = q[:published_at]
@@ -757,6 +784,14 @@ class Quizzes::Quiz < ActiveRecord::Base
     end
   end
 
+  def prepare_matches(question)
+    if matches = question[:matches]
+      # question matches should always be shuffled, regardless of the
+      # shuffle_answers option
+      matches.sort_by { |m| rand }
+    end
+  end
+
   # Takes the PRE-SAVED version of the quiz and uses it to generate a
   # SAVED version.  That is, gathers the relationship entities from
   # the database and uses them to populate a static version that will
@@ -815,22 +850,22 @@ class Quizzes::Quiz < ActiveRecord::Base
       locked = false
       quiz_for_user = self.overridden_for(user)
       if (quiz_for_user.unlock_at && quiz_for_user.unlock_at > Time.now)
-        sub = user && quiz_submissions.find_by_user_id(user.id)
+        sub = user && quiz_submissions.where(user_id: user).first
         if !sub || !sub.manually_unlocked
           locked = {:asset_string => self.asset_string, :unlock_at => quiz_for_user.unlock_at}
         end
       elsif (quiz_for_user.lock_at && quiz_for_user.lock_at <= Time.now)
-        sub = user && quiz_submissions.find_by_user_id(user.id)
+        sub = user && quiz_submissions.where(user_id: user).first
         if !sub || !sub.manually_unlocked
           locked = {:asset_string => self.asset_string, :lock_at => quiz_for_user.lock_at}
         end
       elsif !opts[:skip_assignment] && (self.for_assignment? && l = self.assignment.locked_for?(user, opts))
-        sub = user && quiz_submissions.find_by_user_id(user.id)
+        sub = user && quiz_submissions.where(user_id: user).first
         if !sub || !sub.manually_unlocked
           locked = l
         end
       elsif item = locked_by_module_item?(user, opts[:deep_check_if_needed])
-        sub = user && quiz_submissions.find_by_user_id(user.id)
+        sub = user && quiz_submissions.where(user_id: user).first
         if !sub || !sub.manually_unlocked
           locked = {:asset_string => self.asset_string, :context_module => item.context_module.attributes}
         end
@@ -1072,7 +1107,7 @@ class Quizzes::Quiz < ActiveRecord::Base
     given { |user, session| self.context.grants_right?(user, session, :manage_grades) } #admins.include? user }
     can :read_statistics and can :read and can :submit and can :grade
 
-    given { |user| self.available? && self.context.try_rescue(:is_public) && !self.graded? }
+    given { |user| self.available? && self.context.try_rescue(:is_public) && !self.graded? && self.visible_to_user?(user) }
     can :submit
 
     given do |user, session|
@@ -1086,7 +1121,8 @@ class Quizzes::Quiz < ActiveRecord::Base
 
     given do |user, session|
       available? &&
-        context.grants_right?(user, session, :participate_as_student)
+        context.grants_right?(user, session, :participate_as_student) &&
+        visible_to_user?(user)
     end
     can :read and can :submit
   end
@@ -1096,6 +1132,11 @@ class Quizzes::Quiz < ActiveRecord::Base
   scope :active, -> { where("quizzes.workflow_state<>'deleted'") }
   scope :not_for_assignment, -> { where(:assignment_id => nil) }
   scope :available, -> { where("quizzes.workflow_state = 'available'") }
+
+  scope :visible_to_students_in_course_with_da, lambda {|student_ids, course_ids|
+    joins(:quiz_student_visibilities).
+    where(:quiz_student_visibilities => { :user_id => student_ids, :course_id => course_ids })
+  }
 
   def teachers
     context.teacher_enrollments.map(&:user)

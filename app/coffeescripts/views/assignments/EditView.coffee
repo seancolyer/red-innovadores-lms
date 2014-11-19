@@ -174,8 +174,8 @@ AssignmentGroupSelector, GroupCategorySelector, toggleAccessibly) ->
         kalturaEnabled: ENV?.KALTURA_ENABLED or false
         postToSISEnabled: ENV?.POST_TO_SIS or false
         isLargeRoster: ENV?.IS_LARGE_ROSTER or false
-        differentiatedAssignmnetsEnabled: ENV?.DIFFERENTIATED_ASSIGNMENTS_ENABLED or false
         submissionTypesFrozen: _.include(data.frozenAttributes, 'submission_types')
+        differentiatedAssignmentsEnabled: @assignment.differentiatedAssignmentsEnabled()
 
     _attachEditorToDescription: =>
       @$description.editorBox()
@@ -224,6 +224,7 @@ AssignmentGroupSelector, GroupCategorySelector, toggleAccessibly) ->
         missingDateDialog = new MissingDateDialog
           validationFn: -> sections
           labelFn: (section) -> section.get 'name'
+          da_enabled: ENV?.DIFFERENTIATED_ASSIGNMENTS_ENABLED
           success: =>
             ValidatedFormView::submit.call(this)
         missingDateDialog.cancel = (e) ->

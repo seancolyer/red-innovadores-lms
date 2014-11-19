@@ -193,6 +193,24 @@
 #       }
 #     }
 #
+# @model NeedsGradingCount
+#     {
+#       "id": "NeedsGradingCount",
+#       "description": "Used by Assignment model",
+#       "properties": {
+#         "section_id": {
+#           "description": "The section ID",
+#           "example": "123456",
+#           "type": "string"
+#         },
+#         "needs_grading_count": {
+#           "description": "Number of submissions that need grading",
+#           "example": 5,
+#           "type": "integer"
+#         }
+#       }
+#     }
+#
 # @model Assignment
 #     {
 #       "id": "Assignment",
@@ -318,7 +336,8 @@
 #             {"section_id":"123456","needs_grading_count":5},
 #             {"section_id":"654321","needs_grading_count":0}
 #           ],
-#           "type": "array"
+#           "type": "array",
+#           "items": { "$ref": "NeedsGradingCount" }
 #         },
 #         "position": {
 #           "description": "the sorting order of the assignment in the group",
@@ -507,18 +526,8 @@ class AssignmentsApiController < ApplicationController
         scope = scope.published
       end
 
-      if @context.feature_enabled?(:differentiated_assignments) && !@context.grants_any_right?(@current_user, :read_as_admin, :manage_grades, :manage_assignments)
-        student_ids = [@current_user.id]
-
-        if @context.user_has_been_observer?(@current_user)
-          observed_student_ids = ObserverEnrollment.observed_student_ids(@context, @current_user)
-          student_ids.concat(observed_student_ids)
-          # if observer has no students, let them see any assignments already in the scope
-          # otherwise, filter assignments by observed student visibilities
-          scope = scope.visible_to_student_in_course_with_da(student_ids, @context.id) if observed_student_ids.any?
-        else
-          scope = scope.visible_to_student_in_course_with_da(student_ids, @context.id)
-        end
+      if da_enabled = @context.feature_enabled?(:differentiated_assignments)
+        scope = DifferentiableAssignment.scope_filter(scope, @current_user, @context)
       end
 
       assignments = Api.paginate(scope, self, api_v1_course_assignments_url(@context))
@@ -537,21 +546,27 @@ class AssignmentsApiController < ApplicationController
       override_param = params[:override_assignment_dates] || true
       override_dates = value_to_boolean(override_param)
       if override_dates
-        Assignment.send(:preload_associations, assignments, :assignment_overrides)
+        ActiveRecord::Associations::Preloader.new(assignments, :assignment_overrides).run
         assignments.select{ |a| a.assignment_overrides.size == 0 }.
           each { |a| a.has_no_overrides = true }
       end
 
-      include_visibility = Array(params[:include]).include?('assignment_visibility')
+      include_visibility = Array(params[:include]).include?('assignment_visibility') && @context.grants_any_right?(@current_user, :read_as_admin, :manage_grades, :manage_assignments)
+
+      if include_visibility && da_enabled
+        assignment_visibilities = AssignmentStudentVisibility.users_with_visibility_by_assignment(course_id: @context.id, assignment_id: assignments.map(&:id))
+      end
 
       needs_grading_by_section_param = params[:needs_grading_count_by_section] || false
       needs_grading_count_by_section = value_to_boolean(needs_grading_by_section_param)
 
       hashes = assignments.map do |assignment|
+        visibility_array = assignment_visibilities[assignment.id] if assignment_visibilities
         submission = submissions[assignment.id]
         assignment_json(assignment, @current_user, session,
                         submission: submission, override_dates: override_dates,
                         include_visibility: include_visibility,
+                        assignment_visibilities: visibility_array,
                         needs_grading_count_by_section: needs_grading_count_by_section)
       end
 
@@ -579,7 +594,7 @@ class AssignmentsApiController < ApplicationController
         submission = @assignment.submissions.for_user(@current_user).first
       end
 
-      include_visibility = Array(params[:include]).include?('assignment_visibility')
+      include_visibility = Array(params[:include]).include?('assignment_visibility') && @context.grants_any_right?(@current_user, :read_as_admin, :manage_grades, :manage_assignments)
 
       override_param = params[:override_assignment_dates] || true
       override_dates = value_to_boolean(override_param)

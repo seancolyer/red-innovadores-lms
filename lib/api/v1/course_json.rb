@@ -1,7 +1,7 @@
 module Api::V1
   class CourseJson
 
-    BASE_ATTRIBUTES = %w(id name course_code account_id start_at default_view)
+    BASE_ATTRIBUTES = %w(id name course_code account_id start_at default_view enrollment_term_id)
 
     INCLUDE_CHECKERS = { :grading => 'needs_grading_count', :syllabus => 'syllabus_body',
                          :url => 'html_url', :description => 'public_description', :permissions => "permissions" }
@@ -40,6 +40,7 @@ module Api::V1
       @hash['public_description'] = description(@course)
       @hash['hide_final_grades'] = @course.hide_final_grades?
       @hash['workflow_state'] = @course.api_state
+      @hash['course_format'] = @course.course_format if @course.course_format.present?
       clear_unneeded_fields(@hash)
     end
 

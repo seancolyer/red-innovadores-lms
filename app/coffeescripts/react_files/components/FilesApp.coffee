@@ -1,5 +1,6 @@
 define [
   'react'
+  'i18n!react_files'
   'compiled/react/shared/utils/withReactDOM'
   'compiled/str/splitAssetString'
   './Toolbar'
@@ -7,52 +8,113 @@ define [
   './FolderTree'
   './FilesUsage'
   '../mixins/MultiselectableMixin'
-], (React, withReactDOM, splitAssetString, Toolbar, Breadcrumbs, FolderTree, FilesUsage, MultiselectableMixin) ->
+  '../mixins/dndMixin'
+  '../modules/filesEnv'
+], (React, I18n, withReactDOM, splitAssetString, Toolbar, Breadcrumbs, FolderTree, FilesUsage, MultiselectableMixin, dndMixin, filesEnv) ->
 
   FilesApp = React.createClass
+    displayName: 'FilesApp'
 
-    onResolvePath: ({currentFolder, rootTillCurrentFolder}) ->
-      @setState({currentFolder, rootTillCurrentFolder})
+    onResolvePath: ({currentFolder, rootTillCurrentFolder, showingSearchResults, searchResultCollection}) ->
+      @setState
+        currentFolder: currentFolder
+        rootTillCurrentFolder: rootTillCurrentFolder
+        showingSearchResults: showingSearchResults
+        selectedItems: []
+        searchResultCollection: searchResultCollection
 
     getInitialState: ->
       {
         currentFolder: undefined
         rootTillCurrentFolder: undefined
+        showingSearchResults: false
+        selectedItems: undefined
       }
 
-    mixins: [MultiselectableMixin]
+    mixins: [MultiselectableMixin, dndMixin]
 
     # for MultiselectableMixin
-    selectables: -> @state.currentFolder.children(@props.query)
+    selectables: ->
+      if @state.showingSearchResults
+        @state.searchResultCollection.models
+      else
+        @state.currentFolder.children(@props.query)
 
     render: withReactDOM ->
+      if @state.currentFolder # when showing a folder
+        contextType = @state.currentFolder.get('context_type').toLowerCase() + 's'
+        contextId = @state.currentFolder.get('context_id')
+      else # when showing search results
+        contextType = filesEnv.contextType
+        contextId = filesEnv.contextId
+
+      userCanManageFilesForContext = filesEnv.userHasPermission({contextType: contextType, contextId: contextId}, 'manage_files')
+
       div null,
-        Toolbar({
-          currentFolder: @state.currentFolder,
-          query: @props.query,
-          params: @props.params
-          selectedItems: @state.selectedItems
+        # For whatever reason, VO in Safari didn't like just the h1 tag.
+        # Sometimes it worked, others it didn't, this makes it work always
+        header {},
+          h1 {className: 'screenreader-only'},
+              I18n.t('files_heading', "Files")
+        Breadcrumbs({
+          rootTillCurrentFolder: @state.rootTillCurrentFolder
+          query: @props.query
+          showingSearchResults: @state.showingSearchResults
         })
-        if @state.rootTillCurrentFolder
-          Breadcrumbs({
-            rootTillCurrentFolder: @state.rootTillCurrentFolder,
-            contextType: @props.params.contextType,
-            contextId: @props.params.contextId
-          })
+        Toolbar({
+          currentFolder: @state.currentFolder
+          query: @props.query
+          selectedItems: @state.selectedItems
+          clearSelectedItems: @clearSelectedItems
+          contextType: contextType
+          contextId: contextId
+          userCanManageFilesForContext: userCanManageFilesForContext
+        })
+
         div className: 'ef-main',
-          aside className: 'visible-desktop ef-folder-content',
-            if @state.rootTillCurrentFolder
-              FolderTree({
-                rootTillCurrentFolder: @state.rootTillCurrentFolder,
-                contextType: @props.params.contextType,
-                contextId: @props.params.contextId
-              })
-            FilesUsage({
-              contextType: @props.params.contextType
-              contextId: @props.params.contextId
+          aside {
+            className: 'visible-desktop ef-folder-content'
+            role: 'region'
+            'aria-label' : I18n.t('folder_browsing_tree', 'Folder Browsing Tree')
+          },
+            FolderTree({
+              rootTillCurrentFolder: @state.rootTillCurrentFolder
+              rootFoldersToShow: filesEnv.rootFolders
+              dndOptions:
+                onItemDragEnterOrOver: @onItemDragEnterOrOver
+                onItemDragLeaveOrEnd: @onItemDragLeaveOrEnd
+                onItemDrop: @onItemDrop
             })
-          @props.activeRouteHandler
-            onResolvePath: @onResolvePath
-            currentFolder: @state.currentFolder
-            selectedItems: @state.selectedItems
-            toggleItemSelected: @toggleItemSelected
+          div {
+            className:'ef-directory'
+            role: 'region'
+            'aria-label' : I18n.t('file_list', 'File List')
+          },
+            @props.activeRouteHandler
+              onResolvePath: @onResolvePath
+              currentFolder: @state.currentFolder
+              contextType: contextType
+              contextId: contextId
+              selectedItems: @state.selectedItems
+              toggleItemSelected: @toggleItemSelected
+              toggleAllSelected: @toggleAllSelected
+              areAllItemsSelected: @areAllItemsSelected
+              userCanManageFilesForContext: userCanManageFilesForContext
+              dndOptions:
+                onItemDragStart: @onItemDragStart
+                onItemDragEnterOrOver: @onItemDragEnterOrOver
+                onItemDragLeaveOrEnd: @onItemDragLeaveOrEnd
+                onItemDrop: @onItemDrop
+
+        div className: 'ef-footer grid-row',
+          if userCanManageFilesForContext
+            FilesUsage({
+              className: 'col-xs-3'
+              contextType: contextType
+              contextId: contextId
+            })
+          unless filesEnv.showingAllContexts
+            div className: 'col-xs',
+              div {},
+                a className: 'pull-right', href: '/files?show_all_contexts=1',
+                  I18n.t('all_my_files', 'All My Files')

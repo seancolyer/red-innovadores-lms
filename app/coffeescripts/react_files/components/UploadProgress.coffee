@@ -1,35 +1,37 @@
 define [
+  'i18n!react_files'
   'react'
   'compiled/react/shared/utils/withReactDOM'
   '../modules/FileUploader'
-  'i18n!upload_progress_view'
-], (React, withReactDOM, FileUploader, I18n) ->
+  './ProgressBar'
+], (I18n, React, withReactDOM, FileUploader, ProgressBar) ->
 
-  UploadProgressView = React.createClass
+  UploadProgress = React.createClass
+    displayName: 'UploadProgress'
 
     propTypes:
-      uploader: React.PropTypes.instanceOf(FileUploader).isRequired
+      removeUploader: React.PropTypes.func.isRequired
+      uploader: React.PropTypes.shape({
+        getFileName: React.PropTypes.func.isRequired
+        roundProgress: React.PropTypes.func.inRequired
+      })
 
-    getProgressWithLabel: ->
-      "#{@props.uploader.getFileName()} - #{@props.uploader.roundProgress()}%"
+    getLabel: withReactDOM ->
+      span {},
+        i className: 'icon-document'
+        span ref: 'fileName', @props.uploader.getFileName()
 
-    createWidthStyle: ->
-      width: "#{@props.uploader.roundProgress()}%"
-
-    buildSpinner: withReactDOM ->
-      img
-        className: 'upload-progress-view__indeterminate'
-        src:'/images/ajax-loader-black-on-white.gif'
-        alt: I18n.t('processing', 'processing')
+    handleCancelUpload: (event) ->
+      event.preventDefault()
+      @props.uploader.abort()
+      @props.removeUploader(@props.uploader)
 
     render: withReactDOM ->
+      progress = @props.uploader.roundProgress()
       div className: 'upload-progress-view',
         div className: 'upload-progress-view__label',
           div {},
-            @getProgressWithLabel()
-            @buildSpinner() if @props.uploader.roundProgress() == 100
-        div className: 'upload-progress-view__bar-container',
-          div
-            className: 'upload-progress-view__bar'
-            ref: 'bar'
-            style: @createWidthStyle()
+            @getLabel()
+        ProgressBar progress: progress
+        button onClick: @handleCancelUpload, 'aria-label': I18n.t('cancel_button.label', "Cancel %{fileName} from uploading", fileName: @props.uploader.getFileName()), className: 'btn-link upload-progress-view__button', 'x',
+    displayName: I18n.t('name', 'Name')

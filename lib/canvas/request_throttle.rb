@@ -43,8 +43,8 @@ class RequestThrottle
     starting_mem = Canvas.sample_memory()
     starting_cpu = Process.times()
 
-    request = ActionController::Request.new(env)
-    # workaround a rails bug where some ActionController::Request methods blow
+    request = ActionDispatch::Request.new(env)
+    # workaround a rails bug where some ActionDispatch::Request methods blow
     # up when using certain servers until fullpath is called once to set env['REQUEST_URI']
     request.fullpath
 
@@ -161,16 +161,9 @@ class RequestThrottle
     RequestContextGenerator.add_meta_header("y", "%.2f" % [system_cpu])
     RequestContextGenerator.add_meta_header("d", "%.2f" % [db_runtime])
 
-    if account
-      CanvasStatsd::Statsd.timing("requests_user_cpu.account_#{account.id}", user_cpu)
-      CanvasStatsd::Statsd.timing("requests_system_cpu.account_#{account.id}", system_cpu)
-      CanvasStatsd::Statsd.timing("requests_user_cpu.shard_#{account.shard.id}", user_cpu)
-      CanvasStatsd::Statsd.timing("requests_system_cpu.shard_#{account.shard.id}", system_cpu)
-
-      if account.shard.respond_to?(:database_server)
-        CanvasStatsd::Statsd.timing("requests_system_cpu.cluster_#{account.shard.database_server.id}", system_cpu)
-        CanvasStatsd::Statsd.timing("requests_user_cpu.cluster_#{account.shard.database_server.id}", user_cpu)
-      end
+    if account && account.shard.respond_to?(:database_server)
+      CanvasStatsd::Statsd.timing("requests_system_cpu.cluster_#{account.shard.database_server.id}", system_cpu)
+      CanvasStatsd::Statsd.timing("requests_user_cpu.cluster_#{account.shard.database_server.id}", user_cpu)
     end
 
     mem_stat = if starting_mem == 0 || ending_mem == 0

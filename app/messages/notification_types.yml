@@ -17,6 +17,12 @@
     - name: Added To Conversation
       delay_for: 0
 
+- category: Conversation Created
+  notifications:
+    - name: Conversation Created
+      delay_for: 0
+
+
 - category: Alert
   notifications:
     - name: Alert
@@ -35,7 +41,12 @@
   notifications:
     - name: New Announcement
       delay_for: 0
+
+- category: Announcement Created By You
+  notifications:
     - name: Announcement Created By You
+      delay_for: 0
+    - name: Announcement Reply
       delay_for: 0
 
 - category: Appointment Availability

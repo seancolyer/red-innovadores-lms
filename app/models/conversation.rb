@@ -86,10 +86,10 @@ class Conversation < ActiveRecord::Base
     private_hash = private ? private_hash_for(users) : nil
     transaction do
       if private
-        conversation = users.first.all_conversations.find_by_private_hash(private_hash).try(:conversation)
+        conversation = users.first.all_conversations.where(private_hash: private_hash).first.try(:conversation)
         # for compatibility during migration, before ConversationParticipant has finished populating
         if Setting.get('populate_conversation_participants_private_hash_complete', '0') == '0'
-          conversation ||= Conversation.find_by_private_hash(private_hash)
+          conversation ||= Conversation.where(private_hash: private_hash).first
         end
       end
       unless conversation
@@ -221,6 +221,10 @@ class Conversation < ActiveRecord::Base
       message.conversation = self
       message.shard = self.shard
 
+      if options[:cc_author]
+        message.cc_author = options[:cc_author]
+      end
+
       # all specified (or implicit) tags, regardless of visibility to individual participants
       users = preload_users_and_context_codes
       new_tags = options[:tags] ? options[:tags] & current_context_strings(1, users) : []
@@ -276,14 +280,15 @@ class Conversation < ActiveRecord::Base
       message.context_type = 'Account'
       message.context_id = options[:root_account_id]
     end
+
     message.asset = options[:asset]
     message.attachment_ids = options[:attachment_ids] if options[:attachment_ids].present?
     message.media_comment = options[:media_comment] if options[:media_comment].present?
     if options[:forwarded_message_ids].present?
-      messages = ConversationMessage.find_all_by_id(options[:forwarded_message_ids].map(&:to_i))
+      messages = ConversationMessage.where(id: options[:forwarded_message_ids].map(&:to_i))
       conversation_ids = messages.select(&:forwardable?).map(&:conversation_id).uniq
       raise "can only forward one conversation at a time" if conversation_ids.size != 1
-      raise "user doesn't have permission to forward these messages" unless current_user.all_conversations.find_by_conversation_id(conversation_ids.first)
+      raise "user doesn't have permission to forward these messages" unless current_user.all_conversations.where(conversation_id: conversation_ids.first).exists?
       # TODO: optimize me
       message.forwarded_message_ids = messages.map(&:id).join(',')
     end
@@ -463,14 +468,14 @@ class Conversation < ActiveRecord::Base
   end
 
   def subscribed_participants
-    ConversationParticipant.send(:preload_associations, conversation_participants, :user) unless ModelCache[:users]
+    ActiveRecord::Associations::Preloader.new(conversation_participants, :user).run unless ModelCache[:users]
     conversation_participants.select(&:subscribed?).map(&:user).compact
   end
 
   def reply_from(opts)
     user = opts.delete(:user)
     message = opts.delete(:text).to_s.strip
-    participant = self.conversation_participants.find_by_user_id(user.id)
+    participant = self.conversation_participants.where(user_id: user).first
     user = nil unless user && participant
     if !user
       raise "Only message participants may reply to messages"
@@ -497,7 +502,7 @@ class Conversation < ActiveRecord::Base
   end
 
   def self.batch_migrate_context_tags!(ids)
-    find_all_by_id(ids).each(&:migrate_context_tags!)
+    where(id: ids).each(&:migrate_context_tags!)
   end
 
   # if the participant list has changed, e.g. we merged user accounts
@@ -508,7 +513,7 @@ class Conversation < ActiveRecord::Base
     return unless private_hash_changed?
     existing = self.shard.activate do
       ConversationParticipant.send(:with_exclusive_scope) do
-        ConversationParticipant.find_by_private_hash(private_hash).try(:conversation)
+        ConversationParticipant.where(private_hash: private_hash).first.try(:conversation)
       end
     end
     if existing

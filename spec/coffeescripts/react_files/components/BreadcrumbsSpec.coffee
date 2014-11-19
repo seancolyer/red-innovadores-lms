@@ -3,38 +3,32 @@ define [
   'jquery'
   'compiled/react_files/components/Breadcrumbs'
   'compiled/models/Folder'
-  'react-router'
-], (React, $, Breadcrumbs, Folder, ReactRouter) ->
+  '../mockFilesENV'
+  'compiled/react_files/routes'
+], (React, $, Breadcrumbs, Folder, mockFilesENV, routes) ->
+
   Simulate = React.addons.TestUtils.Simulate
 
+  # module 'Breadcrumbs'
 
-  # Need to pass in setup objects but doing the same test
-  breadcrumbTest = (routerObject, test) =>
-    sinon.stub(ReactRouter, 'Link').returns("/some_url")
-    @breadcrumbs = React.renderComponent(Breadcrumbs(rootTillCurrentFolder: routerObject), $('<div>').appendTo('body')[0])
+  # test 'generates the home, rootFolder, and other links', ->
 
-    test()
+  #   React.addons.TestUtils.renderIntoDocument(routes)
 
-    ReactRouter.Link.restore()
-    React.unmountComponentAtNode(@breadcrumbs.getDOMNode().parentNode)
+  #   sampleProps =
+  #     rootTillCurrentFolder: [
+  #       new Folder(),
+  #       new Folder({name: 'test_folder_name', full_name: 'course_files/test_folder_name'})
+  #     ]
+  #     contextId: '1'
+  #     contextType: 'courses'
 
-  module 'Breadcrumbs#render',
-  test 'generates the rootFolder link', ->
-    routerObject =
-      [
-        new Folder(name: 'folder')
-      ]
+  #   component = React.renderComponent(Breadcrumbs(sampleProps), $('<div>').appendTo('body')[0])
 
-    breadcrumbTest routerObject, ->
-      ok ReactRouter.Link.calledWith(to: 'rootFolder', contextType: undefined, contextId: undefined, splat: "", activeClassName: 'active'), 'called with correct parameters for rootFolder' 
-  test 'generates a folder link', ->
-    folder = new Folder(name: 'folder')
-    folder.urlPath = -> "somePath"
-    routerObject =
-      [
-        folder
-      ]
+  #   $breadcrumbs = $(component.getDOMNode())
+  #   equal $breadcrumbs.find('.home a').attr('href'), '/', 'correct home url'
+  #   equal $breadcrumbs.find('li:nth-child(3) a').attr('href'), '/courses/1/files', 'rootFolder link has correct url'
+  #   equal $breadcrumbs.find('li:nth-child(4) a').attr('href'), '/courses/1/files/folder/test_folder_name', 'correct url for child'
+  #   equal $breadcrumbs.find('li:nth-child(4) a').text(), 'test_folder_name', 'shows folder names'
 
-    breadcrumbTest routerObject, ->
-      ok ReactRouter.Link.calledWith(to: 'folder', contextType: undefined, contextId: undefined, splat: "somePath", activeClassName: 'active'), 'called with correct parameters for a folder link' 
-  
+  #   React.unmountComponentAtNode(@component.getDOMNode().parentNode)

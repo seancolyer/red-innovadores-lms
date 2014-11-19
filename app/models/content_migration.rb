@@ -380,11 +380,7 @@ class ContentMigration < ActiveRecord::Base
   def check_quiz_id_prepender
     return unless self.context.respond_to?(:assessment_questions)
     if !migration_settings[:id_prepender] && (!migration_settings[:overwrite_questions] || !migration_settings[:overwrite_quizzes])
-      # only prepend an id if the course already has some migrated questions/quizzes
-      if self.context.assessment_questions.where('assessment_questions.migration_id IS NOT NULL').exists? ||
-         (self.context.respond_to?(:quizzes) && self.context.quizzes.where('quizzes.migration_id IS NOT NULL').exists?)
-        migration_settings[:id_prepender] = self.id
-      end
+      migration_settings[:id_prepender] = self.id
     end
   end
 
@@ -392,17 +388,28 @@ class ContentMigration < ActiveRecord::Base
     migration_settings[:migration_ids_to_import] && migration_settings[:migration_ids_to_import][:copy] && migration_settings[:migration_ids_to_import][:copy][val]
   end
 
-  def import_object?(asset_type, mig_id)
-    return false unless mig_id
+  def import_everything?
     return true unless migration_settings[:migration_ids_to_import] && migration_settings[:migration_ids_to_import][:copy] && migration_settings[:migration_ids_to_import][:copy].length > 0
     return true if is_set?(to_import(:everything))
     return true if copy_options && copy_options[:everything]
+    false
+  end
+
+  def import_object?(asset_type, mig_id)
+    return false unless mig_id
+    return true if import_everything?
 
     return true if is_set?(to_import("all_#{asset_type}"))
 
     return false unless to_import(asset_type).present?
 
     is_set?(to_import(asset_type)[mig_id])
+  end
+
+  def import_object!(asset_type, mig_id)
+    return if import_everything?
+    migration_settings[:migration_ids_to_import][:copy][asset_type] ||= {}
+    migration_settings[:migration_ids_to_import][:copy][asset_type][mig_id] = '1'
   end
 
   def is_set?(option)
@@ -470,6 +477,18 @@ class ContentMigration < ActiveRecord::Base
 
   def for_course_copy?
     self.migration_type && self.migration_type == 'course_copy_importer'
+  end
+
+  def check_cross_institution
+    return unless self.context.is_a?(Course)
+    data = self.context.full_migration_hash
+    return unless data
+    source_root_account_uuid = data[:course] && data[:course][:root_account_uuid]
+    @cross_institution = source_root_account_uuid && source_root_account_uuid != self.context.root_account.uuid
+  end
+
+  def cross_institution?
+    @cross_institution
   end
 
   def set_date_shift_options(opts)

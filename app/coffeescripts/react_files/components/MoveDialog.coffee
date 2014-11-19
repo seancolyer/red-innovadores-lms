@@ -4,15 +4,17 @@ define [
   'react'
   'compiled/react/shared/utils/withReactDOM'
   'compiled/fn/preventDefault'
-  'compiled/models/Folder'
-  'compiled/models/FilesystemObject'
   'compiled/views/FileBrowserView'
-], (I18n, $, React, withReactDOM, preventDefault, Folder,FilesystemObject, FileBrowserView) ->
+  '../modules/customPropTypes'
+  '../utils/moveStuff'
+], (I18n, $, React, withReactDOM, preventDefault, FileBrowserView, customPropTypes, moveStuff) ->
 
   MoveDialog = React.createClass
+    displayName: 'MoveDialog'
+
     propTypes:
-      rootFoldersToShow: React.PropTypes.arrayOf(React.PropTypes.instanceOf(Folder)).isRequired
-      thingsToMove: React.PropTypes.arrayOf(React.PropTypes.instanceOf(FilesystemObject)).isRequired
+      rootFoldersToShow: React.PropTypes.arrayOf(customPropTypes.folder).isRequired
+      thingsToMove: React.PropTypes.arrayOf(customPropTypes.filesystemObject).isRequired
       closeDialog: React.PropTypes.func.isRequired
 
     getInitialState: ->
@@ -27,32 +29,20 @@ define [
         item: @props.thingsToMove[0]?.displayName()
       })
 
-      folderTreeHolder = @refs.FolderTreeHolder.getDOMNode()
       new FileBrowserView({
         onlyShowFolders: true,
-        # rootFoldersToShow: TODO: handle showing multipe contexts
+        rootFoldersToShow: @props.rootFoldersToShow
         onClick: @onSelectFolder
-      }).render().$el.appendTo(folderTreeHolder)
-
-      # focus first thing for a11y. same behaviour as our patched jQueryUI dialog
-      $( ":tabbable:first", folderTreeHolder ).focus();
+      }).render().$el.appendTo(@refs.FolderTreeHolder.getDOMNode()).find(':tabbable:first').focus();
 
     onSelectFolder: (event, folder) ->
       event.preventDefault()
       @setState(destinationFolder: folder)
 
     submit: ->
-      promises = @props.thingsToMove.map (thing) => thing.moveTo(@state.destinationFolder)
-      $(@refs.form.getDOMNode()).disableWhileLoading $.when(promises...).then =>
-        @props.closeDialog()
-        $.flashMessage(I18n.t('move_success', {
-          one: "%{item} moved to %{destinationFolder}",
-          other: "%{count} items moved to %{destinationFolder}"
-        }, {
-          count: @props.thingsToMove.length
-          item: @props.thingsToMove[0]?.displayName()
-          destinationFolder: @state.destinationFolder.displayName()
-        }))
+      promise = moveStuff(@props.thingsToMove, @state.destinationFolder)
+      promise.then(@props.closeDialog)
+      $(@refs.form.getDOMNode()).disableWhileLoading(promise)
 
 
     render: withReactDOM ->

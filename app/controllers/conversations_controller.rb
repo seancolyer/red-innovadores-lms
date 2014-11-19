@@ -329,6 +329,13 @@ class ConversationsController < ApplicationController
       context_id = context.id
     end
 
+    params[:recipients].each do |recipient|
+      if recipient =~ /\Acourse_\d+\Z/ &&
+         !Context.find_by_asset_string(recipient).try(:grants_right?, @current_user, session, :send_messages_all)
+        return render_error('recipients', 'invalid')
+      end
+    end
+
     group_conversation     = value_to_boolean(params[:group_conversation])
     batch_private_messages = !group_conversation && @recipients.size > 1
     batch_group_messages   = group_conversation && value_to_boolean(params[:bulk_message])
@@ -353,7 +360,7 @@ class ConversationsController < ApplicationController
       render :json => conversations.map{ |c| conversation_json(c, @current_user, session, :include_participant_avatars => false, :include_participant_contexts => false, :visible => visibility_map[c.conversation_id]) }, :status => :created
     else
       @conversation = @current_user.initiate_conversation(@recipients, !group_conversation, :subject => params[:subject], :context_type => context_type, :context_id => context_id)
-      @conversation.add_message(message, :tags => @tags, :update_for_sender => false)
+      @conversation.add_message(message, :tags => @tags, :update_for_sender => false, :cc_author => true)
       render :json => [conversation_json(@conversation.reload, @current_user, session, :include_indirect_participants => true, :messages => [message])], :status => :created
     end
   rescue ActiveRecord::RecordInvalid => err
@@ -502,7 +509,7 @@ class ConversationsController < ApplicationController
     messages = nil
     Shackles.activate(:slave) do
       messages = @conversation.messages
-      ConversationMessage.send(:preload_associations, messages, :asset)
+      ActiveRecord::Associations::Preloader.new(messages, :asset).run
     end
 
     render :json => conversation_json(@conversation,
@@ -787,7 +794,7 @@ class ConversationsController < ApplicationController
   #   }
   def remove_messages
     if params[:remove]
-      @conversation.remove_messages(*@conversation.messages.find_all_by_id(*params[:remove]))
+      @conversation.remove_messages(*@conversation.messages.where(id: params[:remove]).to_a)
       if @conversation.conversation_message_participants.where('workflow_state <> ?', 'deleted').length == 0
         @conversation.update_attribute(:last_message_at, nil)
       end
@@ -978,14 +985,14 @@ class ConversationsController < ApplicationController
   def infer_tags
     tags = param_array(:tags).concat(param_array(:recipients)).concat([params[:context_code]])
     tags = SimpleTags.normalize_tags(tags)
-    tags += tags.grep(/\Agroup_(\d+)\z/){ g = Group.find_by_id($1.to_i) and g.context.asset_string }.compact
+    tags += tags.grep(/\Agroup_(\d+)\z/){ g = Group.where(id: $1.to_i).first and g.context.asset_string }.compact
     @tags = tags.uniq
   end
 
   def get_conversation(allow_deleted = false)
     scope = @current_user.all_conversations
     scope = scope.where('message_count>0') unless allow_deleted
-    @conversation = scope.find_by_conversation_id(params[:id] || params[:conversation_id] || 0)
+    @conversation = scope.where(conversation_id: params[:id] || params[:conversation_id] || 0).first
     raise ActiveRecord::RecordNotFound unless @conversation
   end
 

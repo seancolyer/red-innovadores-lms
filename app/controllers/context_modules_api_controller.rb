@@ -358,7 +358,7 @@ class ContextModulesApiController < ApplicationController
       scope = ContextModule.search_by_attribute(scope, :name, params[:search_term]) unless includes.include?('items')
       modules = Api.paginate(scope, self, route)
 
-      ContextModule.send(:preload_associations, modules, {:content_tags => :content}) if includes.include?('items')
+      ActiveRecord::Associations::Preloader.new(modules, content_tags: :content) if includes.include?('items')
 
       if @student
         modules_and_progressions = modules.map { |m| [m, m.evaluate_for(@student)] }
@@ -370,6 +370,20 @@ class ContextModulesApiController < ApplicationController
         SearchTermHelper.validate_search_term(params[:search_term])
         opts[:search_term] = params[:search_term]
       end
+
+      if @context.feature_enabled?(:differentiated_assignments) && includes.include?('items')
+        user_ids = (@student || @current_user).id
+
+        if @context.user_has_been_observer?(@student || @current_user)
+          opts[:observed_student_ids] = ObserverEnrollment.observed_student_ids(self.context, (@student || @current_user) )
+          user_ids.concat(opts[:observed_student_ids])
+        end
+
+        opts[:assignment_visibilities] = AssignmentStudentVisibility.visible_assignment_ids_for_user(user_ids, @context.id)
+        opts[:discussion_visibilities] = DiscussionTopic.visible_to_students_in_course_with_da(user_ids, @context.id).pluck(:id)
+        opts[:quiz_visibilities] = Quizzes::Quiz.visible_to_students_in_course_with_da(user_ids,@context.id).pluck(:quiz_id)
+      end
+
       render :json => modules_and_progressions.map { |mod, prog| module_json(mod, @student || @current_user, session, prog, includes, opts) }.compact
     end
   end
@@ -403,7 +417,7 @@ class ContextModulesApiController < ApplicationController
     if authorized_action(@context, @current_user, :read)
       mod = @context.modules_visible_to(@student || @current_user).find(params[:id])
       includes = Array(params[:include])
-      ContextModule.send(:preload_associations, mod, {:content_tags => :content}) if includes.include?('items')
+      ActiveRecord::Associations::Preloader.new(mod, content_tags: :content).run if includes.include?('items')
       prog = @student ? mod.evaluate_for(@student) : nil
       render :json => module_json(mod, @student || @current_user, session, prog, includes)
     end
@@ -441,7 +455,7 @@ class ContextModulesApiController < ApplicationController
       return render(:json => { :message => 'must specify module_ids[]' }, :status => :bad_request) unless params[:module_ids].present?
 
       module_ids = Api.map_non_sis_ids(Array(params[:module_ids]))
-      modules = @context.context_modules.not_deleted.find_all_by_id(module_ids)
+      modules = @context.context_modules.not_deleted.where(id: module_ids)
       return render(:json => { :message => 'no modules found' }, :status => :not_found) if modules.empty?
 
       completed_ids = []

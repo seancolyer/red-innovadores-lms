@@ -56,6 +56,10 @@ class Quizzes::QuizzesController < ApplicationController
     # overrides later using the API:
     scope = scope.available unless can_manage
 
+    if @context.feature_enabled?(:differentiated_assignments)
+      scope = DifferentiableAssignment.scope_filter(scope, @current_user, @context)
+    end
+
     quizzes = scope.sort_by do |quiz|
       due_date = quiz.assignment ? quiz.assignment.due_at : quiz.lock_at
       [
@@ -108,10 +112,9 @@ class Quizzes::QuizzesController < ApplicationController
       :quiz_menu_tools => external_tools_display_hashes(:quiz_menu)
     })
 
-    # TODO: stop doing this here
     if @current_user.present?
-      Quizzes::SubmissionManager.send_later_if_production(:grade_outstanding_submissions_in_course,
-        @current_user.id, @context.id, @context.class.to_s)
+      Quizzes::OutstandingQuizSubmissionManager.send_later_if_production(:grade_by_course,
+        @context)
     end
 
     log_asset_access("quizzes:#{@context.asset_string}", "quizzes", 'other')
@@ -190,6 +193,14 @@ class Quizzes::QuizzesController < ApplicationController
     if authorized_action(@quiz, @current_user, :read)
       # optionally force auth even for public courses
       return if value_to_boolean(params[:force_user]) && !force_user
+
+      if @current_user && !@quiz.visible_to_user?(@current_user)
+        respond_to do |format|
+          flash[:error] = t 'notices.quiz_not_availible', "You do not have access to the requested quiz."
+          format.html { redirect_to named_context_url(@context, :context_quizzes_url) }
+        end
+        return
+      end
 
       @quiz = @quiz.overridden_for(@current_user)
       add_crumb(@quiz.title, named_context_url(@context, :context_quiz_url, @quiz))
@@ -294,9 +305,7 @@ class Quizzes::QuizzesController < ApplicationController
       @banks_hash = {}
       bank_ids = @quiz.quiz_groups.map(&:assessment_question_bank_id)
       unless bank_ids.empty?
-        AssessmentQuestionBank.active.find_all_by_id(bank_ids).compact.each do |bank|
-          @banks_hash[bank.id] = bank
-        end
+        @banks_hash = AssessmentQuestionBank.active.where(id: bank_ids).index_by(&:id)
       end
       if @has_student_submissions = @quiz.has_student_submissions?
         flash[:notice] = t('notices.has_submissions_already', "Keep in mind, some students have already taken or started taking this quiz")
@@ -331,7 +340,7 @@ class Quizzes::QuizzesController < ApplicationController
       if params[:quiz][:quiz_type] == 'assignment' || params[:quiz][:quiz_type] == 'graded_survey'
         params[:quiz][:assignment_group_id] ||= @context.assignment_groups.first.id
         if (assignment_group_id = params[:quiz].delete(:assignment_group_id)) && assignment_group_id.present?
-          @assignment_group = @context.assignment_groups.active.find_by_id(assignment_group_id)
+          @assignment_group = @context.assignment_groups.active.where(id: assignment_group_id).first
         end
         if @assignment_group
           @assignment = @context.assignments.build(:title => params[:quiz][:title], :due_at => params[:quiz][:lock_at], :submission_types => 'online_quiz')
@@ -369,7 +378,7 @@ class Quizzes::QuizzesController < ApplicationController
       params[:quiz][:access_code] = nil if params[:quiz][:access_code] == ""
       if params[:quiz][:quiz_type] == 'assignment' || params[:quiz][:quiz_type] == 'graded_survey' #'new' && params[:quiz][:assignment_group_id]
         if (assignment_group_id = params[:quiz].delete(:assignment_group_id)) && assignment_group_id.present?
-          @assignment_group = @context.assignment_groups.active.find_by_id(assignment_group_id)
+          @assignment_group = @context.assignment_groups.active.where(id: assignment_group_id).first
         end
         @assignment_group ||= @context.assignment_groups.first
         # The code to build an assignment for a quiz used to be here, but it's
@@ -454,7 +463,7 @@ class Quizzes::QuizzesController < ApplicationController
 
   def publish
     if authorized_action(@context, @current_user, :manage_assignments)
-      @quizzes = @context.quizzes.active.find_all_by_id(params[:quizzes]).compact
+      @quizzes = @context.quizzes.active.where(id: params[:quizzes])
       @quizzes.each(&:publish!)
 
       flash[:notice] = t('notices.quizzes_published',
@@ -472,7 +481,7 @@ class Quizzes::QuizzesController < ApplicationController
 
   def unpublish
     if authorized_action(@context, @current_user, :manage_assignments)
-      @quizzes = @context.quizzes.active.find_all_by_id(params[:quizzes]).compact.select{|q| q.available? }
+      @quizzes = @context.quizzes.active.where(id: params[:quizzes]).select{|q| q.available? }
       @quizzes.each(&:unpublish!)
 
       flash[:notice] = t('notices.quizzes_unpublished',
@@ -551,7 +560,12 @@ class Quizzes::QuizzesController < ApplicationController
   def managed_quiz_data
     extend Api::V1::User
     if authorized_action(@quiz, @current_user, [:grade, :read_statistics])
-      students = @context.students_visible_to(@current_user).order_by_sortable_name.to_a.uniq
+      student_scope = @context.students_visible_to(@current_user)
+      if @quiz.differentiated_assignments_applies?
+        student_scope = student_scope.able_to_see_quiz_in_course_with_da(@quiz.id, @context.id)
+      end
+      students = student_scope.order_by_sortable_name.to_a.uniq
+
       @submissions_from_users = @quiz.quiz_submissions.for_user_ids(students.map(&:id)).not_settings_only.all
 
       @submissions_from_users = Hash[@submissions_from_users.map { |s| [s.user_id,s] }]
@@ -596,7 +610,7 @@ class Quizzes::QuizzesController < ApplicationController
         @submission = @quiz.quiz_submissions.find(params[:quiz_submission_id])
       else
         user_id = params[:user_id].presence || @current_user.id
-        @submission = @quiz.quiz_submissions.find_by_user_id(user_id, :order => 'created_at') rescue nil
+        @submission = @quiz.quiz_submissions.where(user_id: user_id).order(:created_at).first
       end
       if @submission && !@submission.user_id && logged_out_index = params[:u_index]
         @logged_out_user_index = logged_out_index
@@ -720,10 +734,10 @@ class Quizzes::QuizzesController < ApplicationController
   private
 
   def get_submission
-    submission = @quiz.quiz_submissions.find_by_user_id(@current_user.id, :order => 'created_at') rescue nil
+    submission = @quiz.quiz_submissions.where(user_id: @current_user).order(:created_at).first
     if !@current_user || (params[:preview] && @quiz.grants_right?(@current_user, session, :update))
       user_code = temporary_user_code
-      submission = @quiz.quiz_submissions.find_by_temporary_user_code(user_code)
+      submission = @quiz.quiz_submissions.where(temporary_user_code: user_code).first
     end
 
     submission
@@ -858,7 +872,9 @@ class Quizzes::QuizzesController < ApplicationController
     return false if @locked
     return false unless authorized_action(@quiz, @current_user, :submit)
     return false if @quiz.require_lockdown_browser? && !check_lockdown_browser(:highest, named_context_url(@context, 'context_quiz_take_url', @quiz.id))
+
     quiz_access_code_key = @quiz.access_code_key_for_user(@current_user)
+
     if @quiz.access_code.present? && params[:access_code] == @quiz.access_code
       session[quiz_access_code_key] = true
     end
@@ -867,6 +883,8 @@ class Quizzes::QuizzesController < ApplicationController
       false
     elsif @quiz.ip_filter && !@quiz.valid_ip?(request.remote_ip)
       render :action => 'invalid_ip'
+      false
+    elsif @context.soft_concluded?
       false
     else
       true
@@ -912,7 +930,7 @@ class Quizzes::QuizzesController < ApplicationController
 
     submission = @submission || get_submission
 
-    return unless submission.present?
+    return if submission.blank? || submission.settings_only?
 
     if submission.results_visible? && !submission.has_seen_results?
       Quizzes::QuizSubmission.where({ id: submission }).update_all({

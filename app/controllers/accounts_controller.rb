@@ -116,9 +116,31 @@ class AccountsController < ApplicationController
         else
           @accounts = []
         end
-        render :json => @accounts.map { |a| account_json(a, @current_user, session, params[:includes] || []) }
+        ActiveRecord::Associations::Preloader.new(@accounts, :root_account).run
+        render :json => @accounts.map { |a| account_json(a, @current_user, session, params[:includes] || [], false) }
       end
     end
+  end
+
+  # @API List accounts for course admins
+  # List accounts that the current user can view through their admin course enrollments.
+  # (Teacher, TA, or designer enrollments).
+  # Only returns "id", "name", "workflow_state", "root_account_id" and "parent_account_id"
+  #
+  # @returns [Account]
+  def course_accounts
+    if @current_user
+        course_accounts = BookmarkedCollection.wrap(Account::Bookmarker,
+          Account.where(:id => Account.joins(:courses => :enrollments).merge(
+            @current_user.enrollments.admin.except(:select)).
+            select("accounts.id").uniq.with_each_shard.map(&:id))
+        )
+      @accounts = Api.paginate(course_accounts, self, api_v1_accounts_url)
+    else
+      @accounts = []
+    end
+    ActiveRecord::Associations::Preloader.new(@accounts, :root_account).run
+    render :json => @accounts.map { |a| account_json(a, @current_user, session, params[:includes] || [], true) }
   end
 
   # @API Get a single account
@@ -134,10 +156,11 @@ class AccountsController < ApplicationController
         js_env(:ACCOUNT_COURSES_PATH => account_courses_path(@account, :format => :json))
         load_course_right_side
         @courses = @account.fast_all_courses(:term => @term, :limit => @maximum_courses_im_gonna_show, :hide_enrollmentless_courses => @hide_enrollmentless_courses)
-        Course.send(:preload_associations, @courses, :enrollment_term)
+        ActiveRecord::Associations::Preloader.new(@courses, :enrollment_term).run
         build_course_stats
       end
-      format.json { render :json => account_json(@account, @current_user, session, params[:includes] || []) }
+      format.json { render :json => account_json(@account, @current_user, session, params[:includes] || [],
+                                                 !@account.grants_right?(@current_user, session, :manage)) }
     end
   end
 
@@ -177,6 +200,7 @@ class AccountsController < ApplicationController
     @accounts = Api.paginate(@accounts, self, api_v1_sub_accounts_url,
                              :total_entries => recursive ? nil : @accounts.count)
 
+    ActiveRecord::Associations::Preloader.new(@accounts, [:root_account, :parent_account]).run
     render :json => @accounts.map { |a| account_json(a, @current_user, session, []) }
   end
 
@@ -265,7 +289,7 @@ class AccountsController < ApplicationController
       search_term = params[:search_term]
 
       is_id = search_term.to_s =~ Api::ID_REGEX
-      if is_id && course = @courses.find_by_id(search_term)
+      if is_id && course = @courses.where(id: search_term).first
         @courses = [course]
       elsif is_id && !SearchTermHelper.valid_search_term?(search_term)
         @courses = []
@@ -280,6 +304,7 @@ class AccountsController < ApplicationController
 
     @courses = Api.paginate(@courses, self, api_v1_account_courses_url)
 
+    ActiveRecord::Associations::Preloader.new(@courses, [:account, :root_account])
     render :json => @courses.map { |c| course_json(c, @current_user, session, [], nil) }
   end
 
@@ -483,7 +508,7 @@ class AccountsController < ApplicationController
       end
       load_course_right_side
       @account_users = @account.account_users
-      AccountUser.send(:preload_associations, @account_users, :user)
+      ActiveRecord::Associations::Preloader.new(@account_users, user: :communication_channels).run
       order_hash = {}
       @account.available_account_roles.each_with_index do |type, idx|
         order_hash[type] = idx
@@ -536,7 +561,7 @@ class AccountsController < ApplicationController
     @root_account = @account.root_account
     if authorized_action(@root_account, @current_user, :manage_user_logins)
       @context = @root_account
-      @user = @root_account.all_users.find_by_id(params[:user_id]) if params[:user_id].present?
+      @user = @root_account.all_users.where(id: params[:user_id]).first if params[:user_id].present?
       if !@user
         flash[:error] = t(:no_user_message, "No user found with that id")
         redirect_to account_url(@account)
@@ -547,7 +572,7 @@ class AccountsController < ApplicationController
   def remove_user
     @root_account = @account.root_account
     if authorized_action(@root_account, @current_user, :manage_user_logins)
-      @user = UserAccountAssociation.find_by_account_id_and_user_id(@root_account.id, params[:user_id]).user rescue nil
+      @user = UserAccountAssociation.where(account_id: @root_account.id, user_id: params[:user_id]).first.user rescue nil
       # if the user is in any account other then the
       # current one, remove them from the current account
       # instead of deleting them completely
@@ -716,9 +741,9 @@ class AccountsController < ApplicationController
       result
     end
     @courses.each do |course|
-      course.write_attribute(:student_count, course_to_student_counts[course.id] || 0)
+      course.student_count = course_to_student_counts[course.id] || 0
       course_teachers = courses_to_teachers[course.id] || []
-      course.write_attribute(:teacher_names, course_teachers.uniq(&:user_id).map(&:user_name))
+      course.teacher_names = course_teachers.uniq(&:user_id).map(&:user_name)
     end
   end
   protected :build_course_stats
@@ -748,9 +773,9 @@ class AccountsController < ApplicationController
     end
 
     account_users = admins.map do |admin|
-      admin.save! if admin.new_record?
       if admin.new_record?
-        if admin.user.registed?
+        admin.save!
+        if admin.user.registered?
           admin.account_user_notification!
         else
           admin.account_user_registration!
