@@ -1,6 +1,9 @@
 environment_configuration(defined?(config) && config) do |config|
   # Settings specified here will take precedence over those in config/application.rb
 
+  # Adding this to force ssl redirect. Otherwise, the site will not properly function with SSL. SC 20150822
+  config.force_ssl = true
+
   # The production environment is meant for finished, "live" apps.
   # Code is not reloaded between requests
   config.cache_classes = true
