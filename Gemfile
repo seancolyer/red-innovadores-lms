@@ -53,7 +53,7 @@ end
 gem 'rdiscount',      '1.6.8'
 gem 'require_relative', '1.0.1'
 gem 'ritex',          '1.0.1'
-gem 'rotp',           '1.4.1'
+gem 'rotp',           '6.2.0'
 gem 'rqrcode',        '0.4.2'
 gem 'rscribd',        '1.2.0'
 gem 'net-ldap',       '0.3.1',  :require => 'net/ldap'
