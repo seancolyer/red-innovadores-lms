@@ -24,7 +24,7 @@ if !ONE_NINE
 end
 gem 'hashery',        '1.3.0',  :require => 'hashery/dictionary'
 gem 'highline',       '1.6.1'
-gem 'i18n',           '0.6.0'
+gem 'i18n',           '0.8.0'
 gem 'icalendar',      '1.1.5'
 gem 'jammit',         '0.6.0'
 gem 'json',           '1.5.5'
