@@ -41,7 +41,7 @@ gem 'mime-types',     '1.17.2',   :require => 'mime/types'
 # with mini_magick 3.1
 gem 'mini_magick',    '1.3.2'
 gem 'netaddr',        '1.5.0'
-gem 'nokogiri',       '1.5.5'
+gem 'nokogiri',       '1.5.11'
 gem 'oauth',          '0.4.5'
 gem 'rack',           '1.1.3'
 gem 'rake',           '< 0.10'
