@@ -71,7 +71,7 @@ gem 'crocodoc-ruby',  '0.0.1', :require => 'crocodoc'
 
 group :assets do
   gem 'compass-rails', '1.0.2'
-  gem 'bootstrap-sass', '2.0.3.1'
+  gem 'bootstrap-sass', '3.3.1.0'
 end
 
 
