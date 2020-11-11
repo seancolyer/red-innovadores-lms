@@ -62,7 +62,7 @@ gem 'rubycas-client', '2.2.1'
 gem 'rubyzip',        '0.9.5',  :require => 'zip/zip'
 gem 'sanitize',       '2.0.3'
 gem 'uuid',           '2.3.2'
-gem 'will_paginate',  '2.3.15'
+gem 'will_paginate',  '3.0.5'
 gem 'xml-simple',     '1.0.12', :require => 'xmlsimple'
 # this is only needed by jammit, but we're pinning at 0.9.4 because 0.9.5 breaks
 gem 'yui-compressor', '0.9.4'
