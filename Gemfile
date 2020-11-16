@@ -43,7 +43,7 @@ gem 'mini_magick',    '1.3.2'
 gem 'netaddr',        '1.5.0'
 gem 'nokogiri',       '1.5.5'
 gem 'oauth',          '0.4.5'
-gem 'rack',           '1.1.3'
+gem 'rack',           '1.1.6'
 gem 'rake',           '< 0.10'
 gem 'rdoc',           '3.12'
 gem 'ratom-instructure', '0.6.9', :require => "atom" # custom gem until necessary changes are merged into mainstream
